@@ -40,11 +40,19 @@ TraceLens 是一个专为 RAG（Retrieval-Augmented Generation）系统设计的
 # 1. 安装依赖
 pip install -r requirements.txt
 
-# 2. 启动 PostgreSQL 并创建数据库
-createdb tracelens
+# 2. 创建数据库
+# 在 PostgreSQL 中手动创建数据库（使用 psql 或其他数据库管理工具）
+# CREATE DATABASE tracelens;
 
-# 3. 设置环境变量（可选）
-export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/tracelens"
+# 3. 配置数据库连接（必需）
+# 根据你的实际情况配置数据库连接
+export DATABASE_URL="postgresql://用户名:密码@主机:端口/tracelens"
+
+# 示例（本地数据库）：
+# export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/tracelens"
+
+# 示例（远程数据库）：
+# export DATABASE_URL="postgresql://myuser:mypass@db.example.com:5432/tracelens"
 
 # 4. 启动服务
 uvicorn tracelens.main:app --reload
