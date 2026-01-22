@@ -22,8 +22,13 @@ class TraceLensClient:
             resp.raise_for_status()
             return resp.json()
     
-    def start_run(self, name: str, metadata: dict = None) -> "Run":
-        data = self._post("/api/v1/run/start", {"name": name, "metadata": metadata})
+    def start_run(self, name: str, evaluation_id: UUID = None, test_case_id: UUID = None, metadata: dict = None) -> "Run":
+        payload = {"name": name, "metadata": metadata}
+        if evaluation_id:
+            payload["evaluation_id"] = str(evaluation_id)
+        if test_case_id:
+            payload["test_case_id"] = str(test_case_id)
+        data = self._post("/api/v1/run/start", payload)
         run = Run(self, UUID(data["id"]), data)
         self._current_run_id = run.id
         return run
@@ -126,8 +131,8 @@ def get_client() -> TraceLensClient:
         _client = TraceLensClient()
     return _client
 
-def start_run(name: str, metadata: dict = None) -> Run:
-    return get_client().start_run(name, metadata)
+def start_run(name: str, evaluation_id: UUID = None, test_case_id: UUID = None, metadata: dict = None) -> Run:
+    return get_client().start_run(name, evaluation_id, test_case_id, metadata)
 
 def span(name: str, input: dict = None, metadata: dict = None):
     return get_client().span(name, input, metadata)

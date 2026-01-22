@@ -9,8 +9,13 @@ class RunRepository:
     def __init__(self, db: Session):
         self.db = db
     
-    def create(self, name: str, query: str = None, version_id: str = None, metadata: dict = None) -> Run:
-        run = Run(name=name, query=query, version_id=version_id, metadata_=metadata or {})
+    def create(self, name: str, query: str = None, version_id: str = None, 
+               evaluation_id: UUID = None, test_case_id: UUID = None, metadata: dict = None) -> Run:
+        run = Run(
+            name=name, query=query, version_id=version_id,
+            evaluation_id=evaluation_id, test_case_id=test_case_id,
+            metadata_=metadata or {}
+        )
         self.db.add(run)
         self.db.commit()
         self.db.refresh(run)

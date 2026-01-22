@@ -475,6 +475,126 @@ if relevance < 0.5:
 
 ---
 
+## 批量评测
+
+TraceLens 提供了 **GraphRAG 批量评测**功能，支持系统化地评估 GraphRAG 系统的推理效率和路径质量。
+
+### 核心能力
+
+1. **测试集管理**：创建和管理多跳推理测试问题集
+2. **版本对比**：量化不同剪枝策略、搜索算法的优化效果
+3. **聚合指标**：自动计算 avg / p50 / p95 等统计量
+4. **Per-Query 分析**：识别哪些问题改进显著、哪些仍需优化
+
+### 关键概念
+
+- **TestSuite**：一组多跳推理测试问题的集合
+- **TestCase**：单个测试问题，包含 `query`, `gold_path`, `gold_nodes` 等
+- **Evaluation**：针对特定版本 GraphRAG 系统的评测任务
+- **聚合指标**：对所有 runs 的指标进行统计（avg, p50, p95）
+
+### Gold 数据设计
+
+| 字段 | 类型 | 必需 | 说明 |
+|------|------|------|------|
+| `gold_path` | list[str] | ❌ | 标准推理路径的节点序列，如 `["Alice", "Company_X", "Project_AI"]` |
+| `gold_nodes` | list[str] | ❌ | 应该检索到的关键节点集合 |
+
+- `gold_path` 用于计算 `path_coverage`（路径覆盖度）
+- `gold_nodes` 用于计算节点召回率
+- 全部可选，支持无 gold 数据的场景
+
+### 使用场景
+
+#### 场景 1：评估剪枝策略优化
+
+```python
+# 创建测试集
+test_suite = eval_client.create_test_suite(
+    name="GraphRAG Reasoning Test Suite",
+    description="50个多跳推理测试问题"
+)
+
+# 上传测试用例（包含 gold_path）
+test_cases = [
+    {
+        "query": "Alice 和 Project_AI 的关系",
+        "gold_path": ["Alice", "Company_X", "Project_AI"],
+        "gold_nodes": ["Alice", "Company_X", "Project_AI"]
+    },
+    # ... 更多测试用例
+]
+eval_client.upload_test_cases(suite_id, test_cases)
+
+# 运行 v1.0 评测（BFS）
+evaluation_v1 = eval_client.create_evaluation(
+    name="v1.0 BFS",
+    test_suite_id=suite_id,
+    version_id="v1.0_BFS",
+    metadata={"search_strategy": "BFS", "max_hops": 5}
+)
+# ... 运行评测 ...
+
+# 运行 v2.0 评测（Beam Search）
+evaluation_v2 = eval_client.create_evaluation(
+    name="v2.0 Beam Search",
+    test_suite_id=suite_id,
+    version_id="v2.0_BeamSearch",
+    metadata={"search_strategy": "BeamSearch", "beam_size": 3}
+)
+# ... 运行评测 ...
+
+# 版本对比
+comparison = eval_client.compare_graph_evaluations(
+    eval_a_id=evaluation_v1["id"],
+    eval_b_id=evaluation_v2["id"]
+)
+
+# 分析结果
+branch_delta = comparison["metrics_delta"]["quality"]["branch_explosion_ratio"]
+print(f"分支爆炸比: {branch_delta['avg_a']:.2f} → {branch_delta['avg_b']:.2f}")
+print(f"改善: {branch_delta['percent_change']:.1f}%")
+```
+
+#### 场景 2：参数调优（max_hops, beam_size）
+
+```python
+# 创建多个评测任务，分别使用不同参数
+eval_hops3 = eval_client.create_evaluation(
+    name="max_hops=3",
+    test_suite_id=suite_id,
+    version_id="v1_hops3",
+    metadata={"max_hops": 3}
+)
+
+eval_hops5 = eval_client.create_evaluation(
+    name="max_hops=5",
+    test_suite_id=suite_id,
+    version_id="v1_hops5",
+    metadata={"max_hops": 5}
+)
+
+# 对比
+comparison = eval_client.compare_graph_evaluations(
+    eval_a_id=eval_hops3["id"],
+    eval_b_id=eval_hops5["id"]
+)
+```
+
+### API 端点
+
+- `GET /api/v1/evaluation/{evaluation_id}/graph_metrics` - 获取 GraphRAG 聚合指标
+- `GET /api/v1/evaluation/graph_compare?eval_a={uuid}&eval_b={uuid}` - 对比两个评测
+
+### 详细文档
+
+完整的 GraphRAG 批量评测指南，请参考：
+- **[GRAPH_EVALUATION_GUIDE.md](GRAPH_EVALUATION_GUIDE.md)** - 完整的批量评测指南
+- **[examples/graph_evaluation_example.py](../examples/graph_evaluation_example.py)** - 完整示例代码
+- **[examples/graph_evaluation_comparison_example.py](../examples/graph_evaluation_comparison_example.py)** - 版本对比示例
+
+---
+
 ## 总结
 
 TraceLens GraphRAG 评测体系的核心价值：
@@ -491,5 +611,6 @@ TraceLens GraphRAG 评测体系的核心价值：
 - 搜索算法对比
 - 版本回归测试
 - Benchmark 评测
+- **批量评测与版本对比**（新增）
 ```
 

@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from tracelens.storage.database import get_db
 from tracelens.storage.repository import RunRepository, SpanRepository, EventRepository, MetricRepository
+from tracelens.storage.evaluation_repository import TestCaseRepository, EvaluationRepository
+from tracelens.storage.rag_repository import GoldChunkRepository
 from tracelens.api.schemas import (
     RunStartRequest, RunEndRequest, RunResponse,
     SpanStartRequest, SpanEndRequest, SpanResponse,
@@ -24,7 +26,52 @@ router = APIRouter(prefix="/api/v1")
 @router.post("/run/start", response_model=RunResponse)
 def start_run(req: RunStartRequest, db: Session = Depends(get_db)):
     repo = RunRepository(db)
-    run = repo.create(name=req.name, metadata=req.metadata)
+    
+    # 如果提供了 test_case_id，验证并加载 test case
+    test_case = None
+    if req.test_case_id:
+        test_case_repo = TestCaseRepository(db)
+        test_case = test_case_repo.get(req.test_case_id)
+        if not test_case:
+            raise HTTPException(status_code=404, detail="Test case not found")
+    
+    # 如果提供了 evaluation_id，验证 evaluation
+    if req.evaluation_id:
+        eval_repo = EvaluationRepository(db)
+        evaluation = eval_repo.get(req.evaluation_id)
+        if not evaluation:
+            raise HTTPException(status_code=404, detail="Evaluation not found")
+    
+    # 创建 run，自动关联 test_case 的 query
+    run_metadata = req.metadata or {}
+    run = repo.create(
+        name=req.name,
+        evaluation_id=req.evaluation_id,
+        test_case_id=req.test_case_id,
+        query=test_case.query if test_case else None,
+        metadata=run_metadata
+    )
+    
+    # 如果 test_case 有 gold 数据，自动关联
+    if test_case and test_case.gold_chunk_ids:
+        gold_repo = GoldChunkRepository(db)
+        gold_repo.bulk_create(run.id, test_case.gold_chunk_ids)
+    
+    # 如果 test_case 有 GraphRAG gold 数据（gold_path, gold_nodes），存储到 run.metadata
+    if test_case and (test_case.gold_path or test_case.gold_nodes):
+        if test_case.gold_path:
+            run_metadata["gold_path"] = test_case.gold_path
+        if test_case.gold_nodes:
+            run_metadata["gold_nodes"] = test_case.gold_nodes
+        # 更新 run metadata
+        run.metadata_ = run_metadata
+        db.commit()
+        db.refresh(run)
+    
+    # 如果 test_case 有 gold_answer，存储到 run.answer（稍后用于对比）
+    # 注意：这里不直接存储 gold_answer 到 run.answer，因为 answer 字段用于实际生成的答案
+    # gold_answer 保留在 test_case 中，评测时会读取
+    
     return RunResponse(
         id=run.id, name=run.name, status=run.status,
         metadata=run.metadata_, started_at=run.started_at, ended_at=run.ended_at

@@ -6,6 +6,8 @@ from pydantic import BaseModel
 
 class RunStartRequest(BaseModel):
     name: str
+    evaluation_id: Optional[UUID] = None
+    test_case_id: Optional[UUID] = None
     metadata: Optional[dict] = None
 
 

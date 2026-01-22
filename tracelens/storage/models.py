@@ -14,6 +14,8 @@ class Run(Base):
     query = Column(Text, nullable=True)
     answer = Column(Text, nullable=True)
     version_id = Column(String(255), nullable=True)
+    evaluation_id = Column(UUID(as_uuid=True), ForeignKey("evaluations.id"), nullable=True)
+    test_case_id = Column(UUID(as_uuid=True), ForeignKey("test_cases.id"), nullable=True)
     status = Column(String(50), default="running")  # running / success / error
     metadata_ = Column("metadata", JSONB, default=dict)
     started_at = Column(DateTime, default=datetime.utcnow)
@@ -25,6 +27,8 @@ class Run(Base):
     retrieved_chunks = relationship("RetrievedChunk", back_populates="run", cascade="all, delete-orphan")
     prompt_chunks = relationship("PromptChunk", back_populates="run", cascade="all, delete-orphan")
     gold_chunks = relationship("GoldChunk", back_populates="run", cascade="all, delete-orphan")
+    evaluation = relationship("Evaluation", back_populates="runs")
+    test_case = relationship("TestCase", back_populates="runs")
     # GraphRAG relationships
     graph_nodes = relationship("GraphNode", back_populates="run", cascade="all, delete-orphan")
     graph_edges = relationship("GraphEdge", back_populates="run", cascade="all, delete-orphan")
