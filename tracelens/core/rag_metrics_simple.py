@@ -1,6 +1,9 @@
+import logging
 from uuid import UUID
 from typing import Optional, Dict
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 from tracelens.storage.repository import RunRepository, MetricRepository
 from tracelens.storage.rag_repository import RetrievedChunkRepository, PromptChunkRepository, GoldChunkRepository
 from tracelens.similarity import get_similarity_engine, SimilarityEngine
@@ -70,8 +73,8 @@ def compute_all_metrics(
         try:
             similarity_engine = get_similarity_engine(similarity_mode, similarity_config)
         except Exception as e:
-            print(f"Warning: Failed to create similarity engine: {e}")
-            similarity_engine = get_similarity_engine("lexical")  # 回退到默认
+            logger.warning("Failed to create similarity engine: %s", e)
+            similarity_engine = get_similarity_engine("lexical")
         
         # topK_chunk_query_similarity
         topk_sim = compute_topk_query_similarity(run_id, K=5, db=db, similarity_engine=similarity_engine)
@@ -98,16 +101,15 @@ def compute_all_metrics(
             if dropped_chunks_sim is not None:
                 metrics["dropped_chunks_query_similarity"] = dropped_chunks_sim
     
-    # 保存到 metrics 表（只保存数值型指标）
-    # 同时保存 similarity_mode
     metric_repo = MetricRepository(db)
     for name, value in metrics.items():
         if name != "rank_deltas" and isinstance(value, (int, float)):
-            metric_repo.create(
+            metric_repo.upsert(
                 run_id,
                 name,
                 value=float(value),
-                metadata={"similarity_mode": similarity_mode}
+                metadata={"similarity_mode": similarity_mode},
+                similarity_mode=similarity_mode or "",
             )
     
     return metrics

@@ -1,6 +1,9 @@
+import logging
 from uuid import UUID
 from typing import Dict, List, Optional, Any
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 import numpy as np
 from tracelens.storage.evaluation_repository import EvaluationRepository, TestCaseRepository
 from tracelens.storage.repository import RunRepository, MetricRepository
@@ -79,7 +82,7 @@ def compute_evaluation_metrics(
                                    if k != "rank_deltas" and isinstance(v, (int, float))}
                 metric_names.update(run_metrics_dict.keys())
             except Exception as e:
-                print(f"Warning: Failed to compute metrics for run {run.id}: {e}")
+                logger.warning("Failed to compute metrics for run %s: %s", run.id, e)
                 continue
         
         all_run_metrics[run.id] = run_metrics_dict

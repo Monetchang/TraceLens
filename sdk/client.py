@@ -5,22 +5,44 @@ from contextlib import contextmanager
 
 
 class TraceLensClient:
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8000",
+        api_key: Optional[str] = None,
+        timeout: float = 10.0,
+    ):
         self.base_url = base_url.rstrip("/")
         self._current_run_id: Optional[UUID] = None
         self._current_span_id: Optional[UUID] = None
-    
+        self._api_key = api_key
+        self._timeout = httpx.Timeout(timeout, connect=5.0)
+        self._limits = httpx.Limits(max_keepalive_connections=5)
+        self._client = httpx.Client(
+            timeout=self._timeout,
+            limits=self._limits,
+            headers={"X-API-Key": api_key} if api_key else {},
+        )
+
+    def close(self):
+        self._client.close()
+
     def _post(self, path: str, json: dict) -> dict:
-        with httpx.Client() as client:
-            resp = client.post(f"{self.base_url}{path}", json=json)
+        try:
+            resp = self._client.post(f"{self.base_url}{path}", json=json)
             resp.raise_for_status()
             return resp.json()
-    
+        except httpx.HTTPStatusError as e:
+            detail = e.response.text[:500] if e.response else str(e)
+            raise RuntimeError(f"HTTP {e.response.status_code}: {detail}") from e
+
     def _get(self, path: str) -> dict:
-        with httpx.Client() as client:
-            resp = client.get(f"{self.base_url}{path}")
+        try:
+            resp = self._client.get(f"{self.base_url}{path}")
             resp.raise_for_status()
             return resp.json()
+        except httpx.HTTPStatusError as e:
+            detail = e.response.text[:500] if e.response else str(e)
+            raise RuntimeError(f"HTTP {e.response.status_code}: {detail}") from e
     
     def start_run(self, name: str, evaluation_id: UUID = None, test_case_id: UUID = None, metadata: dict = None) -> "Run":
         payload = {"name": name, "metadata": metadata}
@@ -63,7 +85,8 @@ class TraceLensClient:
             yield span_obj
             output = span_obj._output
         except Exception as e:
-            self._post(f"/api/v1/span/{span_id}/end", {"output": {"error": str(e)}})
+            msg = f"{type(e).__name__}: {str(e)}"[:200]
+            self._post(f"/api/v1/span/{span_id}/end", {"output": {"error": msg}})
             raise
         else:
             self._post(f"/api/v1/span/{span_id}/end", {"output": output})

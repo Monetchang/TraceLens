@@ -2,22 +2,39 @@
 Embedding Similarity Engine
 基于 embedding 的相似度计算
 """
+import hashlib
+import logging
+from collections import OrderedDict
+from typing import Callable, Dict, Optional
+
 import numpy as np
-from typing import Optional, Dict, Callable
+
+logger = logging.getLogger(__name__)
 from .base import SimilarityEngine
+
+CACHE_MAXSIZE = 512
+
+
+class _LRUCache(OrderedDict):
+    def __init__(self, maxsize=512, *args, **kwargs):
+        self.maxsize = maxsize
+        super().__init__(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        if len(self) > self.maxsize:
+            self.popitem(last=False)
 
 
 class EmbeddingSimilarityEngine(SimilarityEngine):
-    """
-    Embedding 相似度引擎
-    
-    需要配置 embedding_function
-    """
-    
+    """Embedding 相似度引擎，需要配置 embedding_function"""
+
     def __init__(self, config: Optional[Dict] = None):
         super().__init__(config)
         self.embedding_function: Optional[Callable] = config.get("embedding_function") if config else None
-        self.cache: Dict[str, np.ndarray] = {}
+        self.cache: _LRUCache = _LRUCache(maxsize=CACHE_MAXSIZE)
     
     def set_embedding_function(self, func: Callable[[str], np.ndarray]):
         """设置 embedding 函数"""
@@ -45,15 +62,12 @@ class EmbeddingSimilarityEngine(SimilarityEngine):
             # 计算余弦相似度
             return self._cosine_similarity(source_emb, target_emb)
         except Exception as e:
-            # 如果 embedding 计算失败，返回 0
-            print(f"Warning: Embedding computation failed: {e}")
+            logger.warning("Embedding computation failed: %s", e)
             return 0.0
     
     def _get_embedding(self, text: str) -> np.ndarray:
         """获取文本的 embedding（带缓存）"""
-        # 简单的缓存策略：使用文本前 100 个字符作为 key
-        cache_key = text[:100] if len(text) > 100 else text
-        
+        cache_key = hashlib.sha256(text.encode()).hexdigest()
         if cache_key not in self.cache:
             emb = self.embedding_function(text)
             self.cache[cache_key] = emb

@@ -1,8 +1,9 @@
 from uuid import UUID
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from tracelens.storage.database import get_db
+from tracelens.api.dependencies import verify_api_key
 from tracelens.storage.evaluation_repository import (
     TestSuiteRepository, TestCaseRepository, EvaluationRepository
 )
@@ -16,6 +17,7 @@ from tracelens.api.graph_evaluation_schemas import (
     GraphEvaluationMetricsResponse, GraphEvaluationComparisonResponse
 )
 from tracelens.core.evaluation_metrics import compute_evaluation_metrics, compute_evaluation_comparison
+from tracelens.storage.database import SessionLocal
 from tracelens.core.graph_evaluation_metrics import (
     compute_graph_evaluation_metrics, compute_graph_evaluation_comparison
 )
@@ -27,7 +29,7 @@ router = APIRouter(prefix="/api/v1")
 # ==================== 测试集管理 ====================
 
 @router.post("/test_suite", response_model=TestSuiteResponse)
-def create_test_suite(req: TestSuiteCreateRequest, db: Session = Depends(get_db)):
+def create_test_suite(req: TestSuiteCreateRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """创建测试集"""
     suite_repo = TestSuiteRepository(db)
     suite = suite_repo.create(req.name, req.description)
@@ -65,7 +67,8 @@ def get_test_suite(suite_id: UUID, db: Session = Depends(get_db)):
 def bulk_create_test_cases(
     suite_id: UUID,
     req: TestCaseBulkCreateRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_api_key),
 ):
     """批量导入测试用例"""
     suite_repo = TestSuiteRepository(db)
@@ -120,7 +123,7 @@ def get_test_cases(
 # ==================== 评测任务管理 ====================
 
 @router.post("/evaluation", response_model=EvaluationResponse)
-def create_evaluation(req: EvaluationCreateRequest, db: Session = Depends(get_db)):
+def create_evaluation(req: EvaluationCreateRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """创建评测任务"""
     suite_repo = TestSuiteRepository(db)
     suite = suite_repo.get(req.test_suite_id)
@@ -201,23 +204,65 @@ def get_evaluation_test_cases(evaluation_id: UUID, db: Session = Depends(get_db)
     ]
 
 
+def _compute_metrics_background(evaluation_id: UUID, similarity_mode: str = "lexical"):
+    db = SessionLocal()
+    try:
+        eval_repo = EvaluationRepository(db)
+        eval_repo.update_metadata(evaluation_id, {"metrics_computation_status": "computing"})
+        metrics_data = compute_evaluation_metrics(evaluation_id, db, similarity_mode, False)
+        eval_repo.update_metadata(
+            evaluation_id,
+            {
+                "metrics_computation_status": "done",
+                "cached_metrics": metrics_data,
+                "cached_metrics_similarity_mode": similarity_mode,
+            },
+        )
+    except Exception:
+        try:
+            eval_repo = EvaluationRepository(db)
+            eval_repo.update_metadata(evaluation_id, {"metrics_computation_status": "error"})
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+@router.post("/evaluation/{evaluation_id}/compute")
+def trigger_compute_metrics(
+    evaluation_id: UUID,
+    background_tasks: BackgroundTasks,
+    similarity_mode: str = Query("lexical", description="相似度计算模式"),
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_api_key),
+):
+    """异步触发指标计算，返回 202。轮询 GET /evaluation/{id}/status 查看 metrics_computation_status"""
+    eval_repo = EvaluationRepository(db)
+    evaluation = eval_repo.get(evaluation_id)
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Evaluation not found")
+    background_tasks.add_task(_compute_metrics_background, evaluation_id, similarity_mode)
+    return {"status": "accepted", "message": "Metrics computation started"}
+
+
 @router.get("/evaluation/{evaluation_id}/status", response_model=EvaluationStatusResponse)
 def get_evaluation_status(evaluation_id: UUID, db: Session = Depends(get_db)):
     """获取评测进度"""
     eval_repo = EvaluationRepository(db)
     suite_repo = TestSuiteRepository(db)
-    
+
     evaluation = eval_repo.get(evaluation_id)
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
-    
+
     total_test_cases = suite_repo.get_test_case_count(evaluation.test_suite_id)
     total_runs = eval_repo.get_run_count(evaluation_id)
     completed_runs = eval_repo.get_run_count(evaluation_id, status="success")
     failed_runs = eval_repo.get_run_count(evaluation_id, status="error")
-    
     progress = completed_runs / total_test_cases if total_test_cases > 0 else 0.0
-    
+    meta = evaluation.metadata_ or {}
+    metrics_status = meta.get("metrics_computation_status")
+
     return EvaluationStatusResponse(
         evaluation_id=evaluation_id,
         status=evaluation.status,
@@ -225,7 +270,8 @@ def get_evaluation_status(evaluation_id: UUID, db: Session = Depends(get_db)):
         total_runs=total_runs,
         completed_runs=completed_runs,
         failed_runs=failed_runs,
-        progress=progress
+        progress=progress,
+        metrics_computation_status=metrics_status,
     )
 
 
@@ -236,19 +282,24 @@ def get_evaluation_metrics(
     include_per_query: bool = Query(False, description="是否包含每个问题的详细指标"),
     db: Session = Depends(get_db)
 ):
-    """获取评测任务的聚合指标"""
+    """获取评测任务的聚合指标。若存在异步计算缓存且模式匹配则直接返回"""
     eval_repo = EvaluationRepository(db)
     evaluation = eval_repo.get(evaluation_id)
-    
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
-    
-    try:
-        metrics_data = compute_evaluation_metrics(
-            evaluation_id, db, similarity_mode, include_per_query
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to compute metrics: {str(e)}")
+
+    meta = evaluation.metadata_ or {}
+    cached = meta.get("cached_metrics")
+    cached_mode = meta.get("cached_metrics_similarity_mode")
+    if cached and cached_mode == similarity_mode and not include_per_query:
+        metrics_data = cached
+    else:
+        try:
+            metrics_data = compute_evaluation_metrics(
+                evaluation_id, db, similarity_mode, include_per_query
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to compute metrics: {str(e)}")
     
     # 转换为响应格式
     aggregate_metrics = {}

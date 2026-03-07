@@ -2,7 +2,10 @@
 GraphRAG 指标计算
 专注于推理路径质量评测
 """
+import logging
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 from typing import Optional, Dict, List, Set
 from sqlalchemy.orm import Session
 from tracelens.storage.repository import RunRepository, MetricRepository
@@ -187,8 +190,8 @@ Score:"""
             score = float(numbers[0])
             return max(0.0, min(1.0, score))
     except Exception as e:
-        print(f"Warning: LLM evaluation failed: {e}")
-    
+        logger.warning("LLM evaluation failed: %s", e)
+
     return None
 
 
@@ -239,24 +242,17 @@ def compute_all_graph_metrics(
     if include_semantic and llm_client:
         metrics["semantic"]["path_relevance_score"] = compute_path_relevance_score(run_id, db, llm_client)
     
-    # 保存到 metrics 表
     metric_repo = MetricRepository(db)
-    
-    # 保存结构性指标
     for name, value in metrics["structural"].items():
         if isinstance(value, bool):
             value = 1.0 if value else 0.0
-        metric_repo.create(run_id, f"graph_{name}", value=float(value), metadata={"type": "structural"})
-    
-    # 保存质量指标
+        metric_repo.upsert(run_id, f"graph_{name}", value=float(value), metadata={"type": "structural"})
     for name, value in metrics["quality"].items():
         if value is not None:
-            metric_repo.create(run_id, f"graph_{name}", value=float(value), metadata={"type": "quality"})
-    
-    # 保存语义指标
+            metric_repo.upsert(run_id, f"graph_{name}", value=float(value), metadata={"type": "quality"})
     for name, value in metrics["semantic"].items():
         if value is not None:
-            metric_repo.create(run_id, f"graph_{name}", value=float(value), metadata={"type": "semantic"})
+            metric_repo.upsert(run_id, f"graph_{name}", value=float(value), metadata={"type": "semantic"})
     
     return metrics
 

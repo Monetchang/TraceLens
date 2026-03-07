@@ -2,9 +2,29 @@
 LLM Judge Similarity Engine
 基于 LLM 的相似度判断
 """
+import hashlib
+import logging
 import re
-from typing import Optional, Dict, Callable
+from collections import OrderedDict
+from typing import Callable, Dict, Optional
+
+logger = logging.getLogger(__name__)
 from .base import SimilarityEngine
+
+CACHE_MAXSIZE = 512
+
+
+class _LRUCache(OrderedDict):
+    def __init__(self, maxsize=512, *args, **kwargs):
+        self.maxsize = maxsize
+        super().__init__(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        if len(self) > self.maxsize:
+            self.popitem(last=False)
 
 
 class LLMSimilarityEngine(SimilarityEngine):
@@ -46,7 +66,7 @@ Score:"""
     def __init__(self, config: Optional[Dict] = None):
         super().__init__(config)
         self.llm_client: Optional[Callable] = config.get("llm_client") if config else None
-        self.cache: Dict[str, float] = {}
+        self.cache: _LRUCache = _LRUCache(maxsize=CACHE_MAXSIZE)
     
     def set_llm_client(self, client: Callable[[str], str]):
         """设置 LLM client"""
@@ -80,9 +100,9 @@ Score:"""
                 chunk=target_text
             )
         
-        # 缓存 key
-        cache_key = f"{source_text[:50]}_{target_text[:50]}_{context.get('type', 'query_chunk')}"
-        
+        ctx_type = context.get("type", "query_chunk")
+        raw_key = f"{source_text}|{target_text}|{ctx_type}"
+        cache_key = hashlib.sha256(raw_key.encode()).hexdigest()
         if cache_key in self.cache:
             return self.cache[cache_key]
         
@@ -98,7 +118,7 @@ Score:"""
             
             return score
         except Exception as e:
-            print(f"Warning: LLM judgment failed: {e}")
+            logger.warning("LLM judgment failed: %s", e)
             return 0.0
     
     def _parse_score(self, response: str) -> float:

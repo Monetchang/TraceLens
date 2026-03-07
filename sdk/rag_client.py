@@ -9,9 +9,13 @@ from .client import TraceLensClient
 
 class RAGClient:
     """RAG API 客户端"""
-    
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.client = TraceLensClient(base_url)
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8000",
+        api_key: Optional[str] = None,
+    ):
+        self.client = TraceLensClient(base_url, api_key=api_key)
     
     def retrieval_completed(self, run_id: UUID, query: Optional[str], retrieved_chunks: List[dict]):
         """上报 retrieval_completed 事件"""

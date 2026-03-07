@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from tracelens.storage.database import get_db
+from tracelens.api.dependencies import verify_api_key
 from tracelens.storage.repository import RunRepository
 from tracelens.storage.graph_repository import (
     GraphNodeRepository,
@@ -22,7 +23,7 @@ router = APIRouter(prefix="/api/v1")
 
 
 @router.post("/graph/expand")
-def graph_expand(req: GraphExpandRequest, db: Session = Depends(get_db)):
+def graph_expand(req: GraphExpandRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """上报图扩展事件"""
     run_repo = RunRepository(db)
     run = run_repo.get(req.run_id)
@@ -55,7 +56,7 @@ def graph_expand(req: GraphExpandRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/graph/path/selected")
-def path_selected(req: PathSelectedRequest, db: Session = Depends(get_db)):
+def path_selected(req: PathSelectedRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """上报路径选择事件"""
     run_repo = RunRepository(db)
     run = run_repo.get(req.run_id)

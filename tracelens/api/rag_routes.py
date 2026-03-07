@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from tracelens.storage.database import get_db
+from tracelens.api.dependencies import verify_api_key
 from tracelens.storage.repository import RunRepository
 from tracelens.storage.rag_repository import (
     RetrievedChunkRepository, PromptChunkRepository, GoldChunkRepository
@@ -18,7 +19,7 @@ router = APIRouter(prefix="/api/v1")
 
 
 @router.post("/retrieval/completed")
-def retrieval_completed(req: RetrievalCompletedRequest, db: Session = Depends(get_db)):
+def retrieval_completed(req: RetrievalCompletedRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """上报 retrieval_completed 事件"""
     run_repo = RunRepository(db)
     run = run_repo.get(req.run_id)
@@ -36,7 +37,7 @@ def retrieval_completed(req: RetrievalCompletedRequest, db: Session = Depends(ge
 
 
 @router.post("/prompt/built")
-def prompt_built(req: PromptBuiltRequest, db: Session = Depends(get_db)):
+def prompt_built(req: PromptBuiltRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """上报 prompt_built 事件"""
     run_repo = RunRepository(db)
     run = run_repo.get(req.run_id)
@@ -50,7 +51,7 @@ def prompt_built(req: PromptBuiltRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/answer/generated")
-def answer_generated(req: AnswerGeneratedRequest, db: Session = Depends(get_db)):
+def answer_generated(req: AnswerGeneratedRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """上报 answer_generated 事件"""
     run_repo = RunRepository(db)
     run = run_repo.get(req.run_id)
@@ -64,7 +65,7 @@ def answer_generated(req: AnswerGeneratedRequest, db: Session = Depends(get_db))
 
 
 @router.post("/gold/chunks")
-def gold_chunks(req: GoldChunksRequest, db: Session = Depends(get_db)):
+def gold_chunks(req: GoldChunksRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """上报 gold_chunks 事件（可选）"""
     run_repo = RunRepository(db)
     run = run_repo.get(req.run_id)
@@ -78,7 +79,7 @@ def gold_chunks(req: GoldChunksRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/run/finished")
-def run_finished(req: RunFinishedRequest, db: Session = Depends(get_db)):
+def run_finished(req: RunFinishedRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """上报 run_finished 事件"""
     run_repo = RunRepository(db)
     run = run_repo.end(req.run_id, status=req.status)
@@ -111,10 +112,14 @@ def get_metrics(
         similarity_mode=similarity_mode
     )
     
-    # 从数据库读取所有 metrics（包括已保存的）
     metric_repo = MetricRepository(db)
     db_metrics = metric_repo.get_by_run(run_id)
-    metrics_dict = {m.name: m.value for m in db_metrics if m.value is not None}
+    metrics_dict = {
+        m.name: m.value
+        for m in db_metrics
+        if m.value is not None
+        and (m.similarity_mode == similarity_mode or m.similarity_mode == "")
+    }
     metrics_dict.update({k: v for k, v in metrics.items() if k != "rank_deltas" and isinstance(v, (int, float))})
     
     # 分离基础指标和扩展指标

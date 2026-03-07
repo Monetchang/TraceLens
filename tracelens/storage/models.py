@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, Text
+from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from tracelens.storage.database import Base
@@ -69,14 +69,18 @@ class Event(Base):
 
 class Metric(Base):
     __tablename__ = "metrics"
-    
+    __table_args__ = (
+        UniqueConstraint("run_id", "name", "similarity_mode", name="uq_metrics_run_name_mode"),
+    )
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     run_id = Column(UUID(as_uuid=True), ForeignKey("runs.id"), nullable=False)
     name = Column(String(255))
+    similarity_mode = Column(String(50), default="", nullable=False)
     value = Column(Float, nullable=True)
     value_json = Column(JSONB, nullable=True)
     metadata_ = Column("metadata", JSONB, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     run = relationship("Run", back_populates="metrics")
 

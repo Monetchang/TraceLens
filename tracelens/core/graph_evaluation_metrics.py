@@ -2,7 +2,10 @@
 GraphRAG 批量评测指标计算
 专注于推理路径质量的聚合分析和版本对比
 """
+import logging
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 from typing import Dict, List, Optional, Any
 from sqlalchemy.orm import Session
 import numpy as np
@@ -128,7 +131,7 @@ def compute_graph_evaluation_metrics(
                 
                 run_metrics = computed
             except Exception as e:
-                print(f"Warning: Failed to compute graph metrics for run {run.id}: {e}")
+                logger.warning("Failed to compute graph metrics for run %s: %s", run.id, e)
                 continue
         
         all_run_metrics[run.id] = run_metrics

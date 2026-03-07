@@ -1,13 +1,17 @@
 from uuid import UUID
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 from sdk.client import TraceLensClient
 
 
 class EvaluationClient:
     """TraceLens 批量评测客户端"""
-    
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.client = TraceLensClient(base_url)
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8000",
+        api_key: Optional[str] = None,
+    ):
+        self.client = TraceLensClient(base_url, api_key=api_key)
     
     # ==================== 测试集管理 ====================
     

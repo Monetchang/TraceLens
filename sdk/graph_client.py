@@ -8,10 +8,15 @@ from typing import List, Optional
 
 class GraphRAGClient:
     """GraphRAG 客户端"""
-    
-    def __init__(self, base_url: str):
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8000",
+        api_key: Optional[str] = None,
+    ):
         from sdk.client import TraceLensClient
-        self.client = TraceLensClient(base_url)
+
+        self.client = TraceLensClient(base_url, api_key=api_key)
     
     def graph_expand(self, run_id: UUID, from_node: str, to_node: str, relation: str, step_index: int):
         """

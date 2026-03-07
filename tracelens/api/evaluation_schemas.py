@@ -82,6 +82,7 @@ class EvaluationStatusResponse(BaseModel):
     completed_runs: int
     failed_runs: int
     progress: float  # 0.0 - 1.0
+    metrics_computation_status: Optional[str] = None  # pending | computing | done
 
 
 class MetricStats(BaseModel):

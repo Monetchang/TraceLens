@@ -64,7 +64,9 @@ class TestCaseRepository:
                 gold_answer=tc_data.get("gold_answer"),
                 gold_chunk_ids=tc_data.get("gold_chunk_ids"),
                 gold_doc_ids=tc_data.get("gold_doc_ids"),
-                metadata_=tc_data.get("metadata", {})
+                gold_path=tc_data.get("gold_path"),
+                gold_nodes=tc_data.get("gold_nodes"),
+                metadata_=tc_data.get("metadata", {}),
             )
             self.db.add(test_case)
             created_cases.append(test_case)
@@ -114,6 +116,16 @@ class EvaluationRepository:
             evaluation.status = status
             if status == "completed":
                 evaluation.completed_at = datetime.utcnow()
+            self.db.commit()
+            self.db.refresh(evaluation)
+        return evaluation
+
+    def update_metadata(self, evaluation_id: UUID, updates: dict) -> Optional[Evaluation]:
+        evaluation = self.get(evaluation_id)
+        if evaluation:
+            meta = dict(evaluation.metadata_ or {})
+            meta.update(updates)
+            evaluation.metadata_ = meta
             self.db.commit()
             self.db.refresh(evaluation)
         return evaluation

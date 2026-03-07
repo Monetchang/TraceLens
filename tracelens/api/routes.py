@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from tracelens.storage.database import get_db
+from tracelens.api.dependencies import verify_api_key
 from tracelens.storage.repository import RunRepository, SpanRepository, EventRepository, MetricRepository
 from tracelens.storage.evaluation_repository import TestCaseRepository, EvaluationRepository
 from tracelens.storage.rag_repository import GoldChunkRepository
@@ -24,7 +25,7 @@ router = APIRouter(prefix="/api/v1")
 
 
 @router.post("/run/start", response_model=RunResponse)
-def start_run(req: RunStartRequest, db: Session = Depends(get_db)):
+def start_run(req: RunStartRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     repo = RunRepository(db)
     
     # 如果提供了 test_case_id，验证并加载 test case
@@ -79,7 +80,7 @@ def start_run(req: RunStartRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/run/{run_id}/end", response_model=RunResponse)
-def end_run(run_id: UUID, req: RunEndRequest, db: Session = Depends(get_db)):
+def end_run(run_id: UUID, req: RunEndRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     repo = RunRepository(db)
     run = repo.end(run_id, status=req.status)
     if not run:
@@ -91,7 +92,7 @@ def end_run(run_id: UUID, req: RunEndRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/span/start", response_model=SpanResponse)
-def start_span(req: SpanStartRequest, db: Session = Depends(get_db)):
+def start_span(req: SpanStartRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     repo = SpanRepository(db)
     span = repo.create(
         run_id=req.run_id, name=req.name, parent_span_id=req.parent_span_id,
@@ -105,7 +106,7 @@ def start_span(req: SpanStartRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/span/{span_id}/end", response_model=SpanResponse)
-def end_span(span_id: UUID, req: SpanEndRequest, db: Session = Depends(get_db)):
+def end_span(span_id: UUID, req: SpanEndRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     repo = SpanRepository(db)
     span = repo.end(span_id, output=req.output)
     if not span:
@@ -118,7 +119,7 @@ def end_span(span_id: UUID, req: SpanEndRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/event", response_model=EventResponse)
-def create_event(req: EventCreateRequest, db: Session = Depends(get_db)):
+def create_event(req: EventCreateRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     repo = EventRepository(db)
     event = repo.create(run_id=req.run_id, name=req.name, data=req.data, span_id=req.span_id)
     return EventResponse(
@@ -128,7 +129,7 @@ def create_event(req: EventCreateRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/metric", response_model=MetricResponse)
-def create_metric(req: MetricCreateRequest, db: Session = Depends(get_db)):
+def create_metric(req: MetricCreateRequest, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     repo = MetricRepository(db)
     metric = repo.create(
         run_id=req.run_id, name=req.name, value=req.value,

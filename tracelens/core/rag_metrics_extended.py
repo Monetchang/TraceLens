@@ -1,7 +1,10 @@
 """
 RAG 扩展指标计算（使用 Similarity Engine）
 """
+import logging
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 from typing import Optional
 from sqlalchemy.orm import Session
 from tracelens.storage.repository import RunRepository
@@ -58,7 +61,7 @@ def compute_topk_query_similarity(
         
         return sum(similarities) / len(similarities)
     except Exception as e:
-        print(f"Warning: Failed to compute topK_query_similarity: {e}")
+        logger.warning("Failed to compute topK_query_similarity: %s", e)
         return None
 
 
@@ -111,7 +114,7 @@ def compute_prompt_chunk_answer_similarity(
         
         return sum(similarities) / len(similarities)
     except Exception as e:
-        print(f"Warning: Failed to compute prompt_chunk_answer_similarity: {e}")
+        logger.warning("Failed to compute prompt_chunk_answer_similarity: %s", e)
         return None
 
 
@@ -191,7 +194,7 @@ def compute_new_chunks_query_similarity(
         
         return sum(similarities) / len(similarities)
     except Exception as e:
-        print(f"Warning: Failed to compute new_chunks_query_similarity: {e}")
+        logger.warning("Failed to compute new_chunks_query_similarity: %s", e)
         return None
 
 
@@ -244,5 +247,5 @@ def compute_dropped_chunks_query_similarity(
         
         return sum(similarities) / len(similarities)
     except Exception as e:
-        print(f"Warning: Failed to compute dropped_chunks_query_similarity: {e}")
+        logger.warning("Failed to compute dropped_chunks_query_similarity: %s", e)
         return None

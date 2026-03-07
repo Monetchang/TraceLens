@@ -87,18 +87,45 @@ class EventRepository:
 class MetricRepository:
     def __init__(self, db: Session):
         self.db = db
-    
-    def create(self, run_id: UUID, name: str, value: float = None, 
-               value_json: dict = None, metadata: dict = None) -> Metric:
+
+    def create(self, run_id: UUID, name: str, value: float = None,
+               value_json: dict = None, metadata: dict = None,
+               similarity_mode: str = "") -> Metric:
         metric = Metric(
             run_id=run_id, name=name, value=value,
-            value_json=value_json, metadata_=metadata or {}
+            value_json=value_json, metadata_=metadata or {},
+            similarity_mode=similarity_mode
         )
         self.db.add(metric)
         self.db.commit()
         self.db.refresh(metric)
         return metric
-    
+
+    def upsert(self, run_id: UUID, name: str, value: float = None,
+               value_json: dict = None, metadata: dict = None,
+               similarity_mode: str = "") -> Metric:
+        from sqlalchemy.dialects.postgresql import insert
+        stmt = insert(Metric).values(
+            run_id=run_id, name=name, value=value,
+            value_json=value_json, metadata_=metadata or {},
+            similarity_mode=similarity_mode
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_metrics_run_name_mode",
+            set_={
+                Metric.value: stmt.excluded.value,
+                Metric.value_json: stmt.excluded.value_json,
+                Metric.metadata_: stmt.excluded.metadata_,
+            },
+        )
+        self.db.execute(stmt)
+        self.db.commit()
+        return self.db.query(Metric).filter(
+            Metric.run_id == run_id,
+            Metric.name == name,
+            Metric.similarity_mode == similarity_mode,
+        ).first()
+
     def get_by_run(self, run_id: UUID) -> list[Metric]:
         return self.db.query(Metric).filter(Metric.run_id == run_id).all()
 
