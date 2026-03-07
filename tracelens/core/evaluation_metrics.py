@@ -67,9 +67,9 @@ def compute_evaluation_metrics(
         # 计算该 run 的指标（如果还没计算过）
         run_metrics_dict = {}
         
-        # 从数据库读取已保存的指标
-        db_metrics = metric_repo.get_by_run(run.id)
-        for m in db_metrics:
+        # 从数据库读取已保存的指标（按 similarity_mode 过滤，精确匹配优先）
+        db_metrics = metric_repo.get_by_run_and_mode(run.id, similarity_mode)
+        for m in sorted(db_metrics, key=lambda x: (0 if x.similarity_mode == "" else 1)):
             if m.value is not None:
                 run_metrics_dict[m.name] = m.value
                 metric_names.add(m.name)

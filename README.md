@@ -37,6 +37,7 @@
 
 ## 🔥 Latest Updates
 
+- **2026-03-07** Metrics: `exact_recall_vs_gold_chunks` (renamed from semantic_recall; chunk_id exact match); evaluation aggregation filters by `similarity_mode`; `rank_deltas` persisted to `value_json`; bulk upsert for chunks; long-lived httpx.Client for embedding/LLM providers
 - **2026-03-06** API Key authentication for write endpoints; optional `X-API-Key` header
 - **2026-03-06** Alembic migrations; replaced `create_all` with `alembic upgrade head` on startup
 - **2026-03-06** Ingest schema validation; Pydantic payload with depth (20) and size (1MB) limits

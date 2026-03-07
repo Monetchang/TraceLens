@@ -37,6 +37,7 @@
 
 ## 🔥 最近更新
 
+- **2026-03-07** 指标优化：`exact_recall_vs_gold_chunks`（原 semantic_recall，chunk_id 精确命中）；evaluation 聚合按 `similarity_mode` 过滤；`rank_deltas` 落库 `value_json`；chunks 批量 upsert；embedding/LLM provider 长连接复用
 - **2026-03-06** 写接口 API Key 鉴权；可选 `X-API-Key` 请求头
 - **2026-03-06** Alembic 迁移；启动时执行 `alembic upgrade head` 替代 `create_all`
 - **2026-03-06** Ingest 接口 Schema 校验；Pydantic 负载，深度 20、大小 1MB 限制

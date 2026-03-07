@@ -2,6 +2,7 @@ from uuid import UUID
 from datetime import datetime
 from typing import Optional
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from tracelens.storage.models import Run, Span, Event, Metric
 
 
@@ -129,3 +130,8 @@ class MetricRepository:
     def get_by_run(self, run_id: UUID) -> list[Metric]:
         return self.db.query(Metric).filter(Metric.run_id == run_id).all()
 
+    def get_by_run_and_mode(self, run_id: UUID, mode: str) -> list[Metric]:
+        q = self.db.query(Metric).filter(Metric.run_id == run_id)
+        if mode:
+            q = q.filter(or_(Metric.similarity_mode == mode, Metric.similarity_mode == ""))
+        return q.all()

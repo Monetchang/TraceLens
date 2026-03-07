@@ -86,10 +86,10 @@ def compute_all_metrics(
         if prompt_answer_sim is not None:
             metrics["prompt_chunk_answer_similarity"] = prompt_answer_sim
         
-        # semantic_recall_vs_gold（可选）
-        semantic_recall = compute_semantic_recall_vs_gold(run_id, threshold=0.8, db=db)
-        if semantic_recall is not None:
-            metrics["semantic_recall_vs_gold"] = semantic_recall
+        # exact_recall_vs_gold_chunks（chunk_id 精确命中率，非语义）
+        exact_recall = compute_semantic_recall_vs_gold(run_id, threshold=0.8, db=db)
+        if exact_recall is not None:
+            metrics["exact_recall_vs_gold_chunks"] = exact_recall
         
         # 版本对比的语义相似度指标
         if prev_run_id:
@@ -111,5 +111,13 @@ def compute_all_metrics(
                 metadata={"similarity_mode": similarity_mode},
                 similarity_mode=similarity_mode or "",
             )
-    
+    if "rank_deltas" in metrics:
+        metric_repo.upsert(
+            run_id,
+            "rank_deltas",
+            value=None,
+            value_json=metrics["rank_deltas"],
+            metadata={"similarity_mode": similarity_mode},
+            similarity_mode=similarity_mode or "",
+        )
     return metrics

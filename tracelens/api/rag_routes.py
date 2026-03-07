@@ -113,20 +113,18 @@ def get_metrics(
     )
     
     metric_repo = MetricRepository(db)
-    db_metrics = metric_repo.get_by_run(run_id)
-    metrics_dict = {
-        m.name: m.value
-        for m in db_metrics
-        if m.value is not None
-        and (m.similarity_mode == similarity_mode or m.similarity_mode == "")
-    }
+    db_metrics = metric_repo.get_by_run_and_mode(run_id, similarity_mode)
+    metrics_dict = {}
+    for m in sorted(db_metrics, key=lambda x: (0 if x.similarity_mode == "" else 1)):
+        if m.value is not None:
+            metrics_dict[m.name] = m.value
     metrics_dict.update({k: v for k, v in metrics.items() if k != "rank_deltas" and isinstance(v, (int, float))})
     
     # 分离基础指标和扩展指标
     extended_keys = {
         "topK_chunk_query_similarity",
         "prompt_chunk_answer_similarity",
-        "semantic_recall_vs_gold",
+        "exact_recall_vs_gold_chunks",
         "new_chunks_query_similarity",
         "dropped_chunks_query_similarity"
     }

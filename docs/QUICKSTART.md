@@ -8,10 +8,29 @@ pip install -r requirements.txt
 
 ## 启动服务
 
+### 本地启动
+
 ```bash
 # 需要先启动 PostgreSQL，创建数据库 tracelens
 export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/tracelens"
 uvicorn tracelens.main:app --reload
+```
+
+### Docker 部署
+
+```bash
+# 构建并启动（含 PostgreSQL）
+docker compose up -d
+
+# 服务地址 http://localhost:8000
+# 启动时自动执行 alembic upgrade head 创建/迁移表
+```
+
+如需配置 Embedding/LLM，可创建 `.env` 并挂载：
+
+```bash
+# docker-compose.yml 中 app 服务添加
+env_file: [.env]
 ```
 
 ## 使用场景
@@ -105,31 +124,41 @@ curl -X POST http://localhost:8000/api/v1/run/finished \
 ### 查询接口
 
 ```bash
-# 查询基础指标
+# 查询基础指标（单 run，无需版本对比）
 curl http://localhost:8000/api/v1/run/<run_id>/metrics
 
-# 查询扩展指标（需要配置 embedding）
+# 查询扩展指标（单 run，需要配置 embedding/LLM）
 curl "http://localhost:8000/api/v1/run/<run_id>/metrics?include_extended=true"
 
-# 版本对比
+# 版本对比（需要 prev_run_id，基础 + 版本对比指标）
 curl "http://localhost:8000/api/v1/run/<run_id>/retrieval_diff?prev_run_id=<prev_run_id>"
 
-# 版本对比 + 扩展指标
+# 版本对比 + 扩展指标（new_chunks_query_similarity / dropped_chunks_query_similarity 需要此模式）
 curl "http://localhost:8000/api/v1/run/<run_id>/retrieval_diff?prev_run_id=<prev_run_id>&include_extended=true"
 ```
 
 ## 核心指标
 
-### 基础指标（版本对比）
-- `new_chunks_ratio`: 新增 chunks 比例
-- `rank_deltas`: 排名变化
+> **名词说明**
+>
+> - **retrieved_chunks**：检索阶段返回的所有候选 chunks，通过 `retrieval_completed` 上报。
+> - **prompt_chunks**：从 retrieved_chunks 中筛选后、实际放入 LLM prompt 的 chunks，通过 `prompt_built` 上报。两者数量不同：retrieved_chunks 是候选集，prompt_chunks 是最终使用集。
+> - **topK chunks**：prompt_chunks 中排名前 K 个（默认 K=5），用于评估最关键 chunks 的质量。
 
-### 扩展指标（需要 embedding）
-- `topK_chunk_query_similarity`: Top-K chunks 与 query 的相似度
-- `prompt_chunk_answer_similarity`: prompt chunks 与 answer 的相似度
-- `semantic_recall_vs_gold`: 相对于 gold chunks 的召回率（可选）
-- `new_chunks_query_similarity`: 新增 chunks 与 query 的相似度
-- `dropped_chunks_query_similarity`: 丢弃 chunks 与 query 的相似度
+### 基础指标（需要传入 `prev_run_id` 做版本对比时计算）
+- `new_chunks_ratio`: 相比上一版本，新增 retrieved chunks 的占比
+- `rank_deltas`: 相同 chunk 在两个版本中的排名变化
+
+### 扩展指标（需要 embedding 或 LLM）
+
+**单 run 指标**（无需版本对比，每次 run 独立计算）：
+- `topK_chunk_query_similarity`: prompt_chunks 前 K 个与 query 的关联度，衡量检索头部质量
+- `prompt_chunk_answer_similarity`: 所有 prompt_chunks 对 answer 的支撑度，衡量 chunks 对最终回答的贡献
+- `exact_recall_vs_gold_chunks`: retrieved_chunks 对 gold chunks 的 chunk_id 精确命中率（需要上报 gold_chunks，可选）
+
+**版本对比指标**（需要传入 `prev_run_id`，对比两个版本的 retrieved_chunks 差异）：
+- `new_chunks_query_similarity`: 本版本相比上一版本**新增**的 retrieved chunks 与 query 的关联度，值高说明新引入的 chunks 是有效的
+- `dropped_chunks_query_similarity`: 本版本相比上一版本**丢失**的 retrieved chunks 与 query 的关联度，值高说明丢掉的是好 chunks（需关注）
 
 ## 示例代码
 
@@ -149,51 +178,176 @@ TraceLens 提供三个示例：
 
 ## Event 约定
 
-- `retrieval_completed`: 检索完成，上报所有检索到的 chunks
-- `prompt_built`: prompt 构建完成，上报使用的 chunks
-- `answer_generated`: answer 生成完成，上报 answer 文本
-- `gold_chunks`: 上报 gold chunks（可选）
-- `run_finished`: run 结束
+> 上报顺序应与 RAG pipeline 执行顺序保持一致，TraceLens 按时序关联各阶段数据。
 
-## 相似度模式
+- `retrieval_completed`: 检索完成，上报所有检索到的 chunks（retrieved_chunks）及 query
+- `prompt_built`: prompt 构建完成，上报实际进入 LLM prompt 的 chunks（prompt_chunks，是 retrieved_chunks 的子集）
+- `answer_generated`: LLM 生成完成，上报 answer 文本
+- `gold_chunks`: 上报标注的正确 chunks（可选，用于 `exact_recall_vs_gold_chunks` 指标）
+- `run_finished`: run 结束，上报状态（success/failure）
 
-TraceLens 提供三种相似度计算模式：
+## 关联度计算模式
+
+TraceLens 提供三种模式计算 chunk 与 query 的**关联度**、chunk 对 answer 的**支撑度**（lexical/embedding 用相似度近似）：
 
 ### 1. Lexical 模式（默认，零配置）
 ```python
 metrics = rag_client.get_metrics(run_id, similarity_mode="lexical")
 ```
-- 特点：基于 TF-IDF 的词法相似度
+- 特点：基于 TF-IDF 的词法相似度近似关联度
 - 适用：日常开发，快速评估
 - 成本：免费
 
-### 2. Embedding 模式（需要配置）
+### 2. Embedding 模式
+
+**配置方式：设置环境变量，无需编写任何代码**
+
 ```python
-# 配置 embedding function
-from tracelens.similarity import get_similarity_engine
-
-engine = get_similarity_engine("embedding", {
-    "embedding_function": your_embed_function
-})
-
-# 使用
 metrics = rag_client.get_metrics(run_id, similarity_mode="embedding")
 ```
-- 特点：基于 embedding 的语义相似度
+
+TraceLens 会自动识别主流 embedding 接口的响应格式，包括 OpenAI 格式、Ollama 格式和腾讯混元原生格式。
+
+#### 各平台接入配置
+
+**OpenAI**
+```bash
+export EMBEDDING_ENDPOINT="https://api.openai.com/v1/embeddings"
+export EMBEDDING_API_KEY="sk-..."
+export EMBEDDING_MODEL="text-embedding-3-small"
+```
+
+**阿里云百炼（Qwen Embedding，兼容 OpenAI 格式）**
+```bash
+export EMBEDDING_ENDPOINT="https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+export EMBEDDING_API_KEY="sk-..."
+export EMBEDDING_MODEL="text-embedding-v3"
+```
+
+**腾讯混元（OpenAI 兼容接口）**
+```bash
+export EMBEDDING_ENDPOINT="https://api.hunyuan.cloud.tencent.com/v1/embeddings"
+export EMBEDDING_API_KEY="..."
+export EMBEDDING_MODEL="hunyuan-embedding"
+```
+
+> 腾讯混元也提供原生 API（响应格式为 `Response.Data[].Embedding`），TraceLens 同样支持。
+
+**Ollama（本地部署）**
+```bash
+export EMBEDDING_ENDPOINT="http://localhost:11434/api/embed"
+export EMBEDDING_MODEL="nomic-embed-text"
+# Ollama 本地部署无需 API Key，留空即可
+```
+
+> Ollama 使用 `/api/embed` 接口，响应格式为 `{"embeddings": [[...]]}` 而非 OpenAI 的 `data[].embedding`，TraceLens 已做兼容处理。
+
+**vLLM / 其他 OpenAI 兼容服务**
+```bash
+export EMBEDDING_ENDPOINT="http://your-vllm-host/v1/embeddings"
+export EMBEDDING_MODEL="your-model-name"
+```
+
+**高级用法：自定义 embedding function（接入任意本地 SDK）**
+
+```python
+import numpy as np
+from tracelens.similarity import get_similarity_engine
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer("BAAI/bge-m3")
+
+def my_embed(text: str) -> np.ndarray:
+    return model.encode(text)
+
+engine = get_similarity_engine("embedding", {"embedding_function": my_embed})
+```
+
 - 适用：生产环境，精确评估
 - 成本：低（~$0.0001/1K tokens）
 
-### 3. LLM 模式（需要配置）
-```python
-# 配置 LLM client
-engine = get_similarity_engine("llm", {
-    "llm_client": your_llm_client
-})
+### 3. LLM 模式
 
-# 使用
+**配置方式：设置环境变量，无需编写任何代码**
+
+```python
 metrics = rag_client.get_metrics(run_id, similarity_mode="llm")
 ```
-- 特点：使用 LLM 判断相似度
+
+所有兼容 OpenAI Chat Completions API 的服务均可直接接入。
+
+#### 各平台接入配置
+
+**OpenAI**
+```bash
+export LLM_ENDPOINT="https://api.openai.com/v1/chat/completions"
+export LLM_API_KEY="sk-..."
+export LLM_MODEL="gpt-4o-mini"
+```
+
+**DeepSeek**
+```bash
+export LLM_ENDPOINT="https://api.deepseek.com/v1/chat/completions"
+export LLM_API_KEY="sk-..."
+export LLM_MODEL="deepseek-chat"
+```
+
+**Kimi（Moonshot AI）**
+```bash
+export LLM_ENDPOINT="https://api.moonshot.cn/v1/chat/completions"
+export LLM_API_KEY="sk-..."
+export LLM_MODEL="moonshot-v1-8k"
+```
+
+**MiniMax**
+```bash
+export LLM_ENDPOINT="https://api.minimax.chat/v1/text/chatcompletion_v2"
+export LLM_API_KEY="..."
+export LLM_MODEL="MiniMax-Text-01"
+```
+
+**阿里云百炼（Qwen）**
+```bash
+export LLM_ENDPOINT="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+export LLM_API_KEY="sk-..."
+export LLM_MODEL="qwen-turbo"
+```
+
+**腾讯混元**
+```bash
+export LLM_ENDPOINT="https://api.hunyuan.cloud.tencent.com/v1/chat/completions"
+export LLM_API_KEY="..."
+export LLM_MODEL="hunyuan-turbos-latest"
+```
+
+**Ollama（本地部署 LLM）**
+```bash
+export LLM_ENDPOINT="http://localhost:11434/v1/chat/completions"
+export LLM_MODEL="qwen2.5:7b"
+# Ollama 本地部署无需 API Key
+```
+
+> Ollama 的 `/v1/chat/completions` 接口兼容 OpenAI 格式，直接可用。
+
+**高级用法：自定义 LLM function**
+
+```python
+from openai import OpenAI
+from tracelens.similarity import get_similarity_engine
+
+client = OpenAI(api_key="sk-...", base_url="https://api.deepseek.com/v1")
+
+def my_llm(prompt: str) -> str:
+    resp = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return resp.choices[0].message.content
+
+engine = get_similarity_engine("llm", {"llm_client": my_llm})
+```
+
+- 特点：使用 LLM 直接判断 query-chunk 关联度、chunk-answer 支撑度
 - 适用：Benchmark，关键决策
 - 成本：高（~$0.01/1K tokens）
 
@@ -252,8 +406,10 @@ for tc in test_cases_to_run:
     
     # 运行你的 RAG 系统
     retrieved_chunks = your_rag_system.retrieve(tc["query"])
+    # retrieved_chunks: 检索返回的全部候选 chunks
     rag_client.retrieval_completed(run.id, retrieved_chunks, tc["query"])
     
+    # prompt_chunks: 从 retrieved_chunks 中筛选后实际放入 prompt 的 chunks（子集）
     prompt_chunks = your_rag_system.build_prompt(retrieved_chunks)
     rag_client.prompt_built(run.id, prompt_chunks)
     
@@ -351,40 +507,29 @@ curl "http://localhost:8000/api/v1/evaluation/compare?eval_a={id_a}&eval_b={id_b
 
 ---
 
-## 相似度模式
+## 关联度计算模式（批量评测）
 
-TraceLens 提供三种相似度计算模式：
+配置方式与单 Run 分析完全相同（设置环境变量即可），只需在调用时传入 `similarity_mode`：
 
-### 1. Lexical 模式（默认，零配置）
 ```python
+# Lexical（默认，零配置）
 metrics = eval_client.get_evaluation_metrics(eval_id, similarity_mode="lexical")
-```
-- 特点：基于 TF-IDF 的词法相似度
-- 适用：日常开发，快速评估
-- 成本：免费
 
-### 2. Embedding 模式（需要配置）
-```python
+# Embedding（需配置 EMBEDDING_ENDPOINT / EMBEDDING_API_KEY / EMBEDDING_MODEL）
 metrics = eval_client.get_evaluation_metrics(eval_id, similarity_mode="embedding")
-```
-- 特点：基于 embedding 的语义相似度
-- 适用：生产环境，精确评估
-- 成本：低（~$0.0001/1K tokens）
 
-### 3. LLM 模式（需要配置）
-```python
+# LLM（需配置 LLM_ENDPOINT / LLM_API_KEY / LLM_MODEL）
 metrics = eval_client.get_evaluation_metrics(eval_id, similarity_mode="llm")
 ```
-- 特点：使用 LLM 判断相似度
-- 适用：Benchmark，关键决策
-- 成本：高（~$0.01/1K tokens）
+
+各平台具体的环境变量配置参见上方「关联度计算模式」章节。
 
 ---
 
 ## 文档索引
 
-- **[批量评测指南](EVALUATION_GUIDE.md)** - 完整的批量评测使用指南
+- **[RAG 批量评测指南](RAG_EVALUATION_GUIDE.md)** - RAG 批量评测与版本对比
 - **[RAG 指标文档](RAG_METRICS.md)** - 单 run 指标详解
-- **[GraphRAG 指标文档](GRAPHRAG_METRICS.md)** - GraphRAG 评估详解
-- **[相似度引擎文档](SIMILARITY_ENGINE.md)** - 三种相似度计算模式
-- **[README](README.md)** - 项目概览
+- **[GraphRAG 批量评测指南](GRAPH_EVALUATION_GUIDE.md)** - GraphRAG 批量评测
+- **[GraphRAG 指标文档](GRAPHRAG_METRICS.md)** - GraphRAG 推理路径指标
+- **[相似度引擎](SIMILARITY_ENGINE.md)** - Lexical / Embedding / LLM 模式

@@ -6,17 +6,26 @@ TraceLens 专注于 **检索质量评估** 和 **版本变化分析**，不试�
 
 > **当你更换切分、向量模型或向量数据库时，检索能力到底发生了什么变化？**
 
+## 名词说明
+
+- **retrieved_chunks**：检索阶段返回的全部候选 chunks，通过 `retrieval_completed` 上报。
+- **prompt_chunks**：从 retrieved_chunks 中筛选后、实际放入 LLM prompt 的 chunks，通过 `prompt_built` 上报。是 retrieved_chunks 的子集，数量通常更少。
+- **topK chunks**：prompt_chunks 中排名前 K 个（默认 K=5）。只取头部用于评估最关键 chunks 的质量，避免尾部 chunks 稀释结果。
+- **gold_chunks**：人工标注的"正确应被检索到的"chunks，通过 `gold_chunks` 事件上报（可选）。
+
 ## 指标分类
 
 TraceLens RAG MVP 提供两类指标：
 
-1. **基础指标**：`new_chunks_ratio`, `rank_deltas`（版本对比）
-2. **扩展指标**（需要 embedding）：
-   - `topK_chunk_query_similarity`（检索质量）
-   - `prompt_chunk_answer_similarity`（chunk 对 answer 的贡献）
-   - `semantic_recall_vs_gold`（召回质量，可选）
-   - `new_chunks_query_similarity`（新增 chunks 质量）
-   - `dropped_chunks_query_similarity`（丢失 chunks 质量）
+1. **基础指标**（需要 `prev_run_id` 做版本对比）：`new_chunks_ratio`, `rank_deltas`
+2. **扩展指标**（需要 embedding 或 LLM）：
+   - 单 run 指标（每次 run 独立计算）：
+     - `topK_chunk_query_similarity`：prompt_chunks 前 K 个与 query 的关联度，衡量检索头部质量
+     - `prompt_chunk_answer_similarity`：所有 prompt_chunks 对 answer 的支撑度
+     - `exact_recall_vs_gold_chunks`：retrieved_chunks 对 gold chunks 的精确命中率（可选）
+   - 版本对比指标（需要 `prev_run_id`，对比两个版本 retrieved_chunks 的差异）：
+     - `new_chunks_query_similarity`：新增 retrieved chunks 与 query 的关联度
+     - `dropped_chunks_query_similarity`：丢失 retrieved chunks 与 query 的关联度
 
 ---
 
@@ -24,11 +33,13 @@ TraceLens RAG MVP 提供两类指标：
 
 ### 1. topK_chunk_query_similarity
 
-**指标名称**: topK_chunk_query_similarity（Top-K prompt chunks 与 query 的相似度）
+**指标名称**: topK_chunk_query_similarity（prompt_chunks 前 K 个与 query 的关联度）
+
+> prompt_chunks 是实际进入 LLM prompt 的 chunks（检索候选集的子集），取前 K 个是因为排名靠前的 chunks 对 LLM 回答影响最大。此指标衡量"最关键的 chunks 是否真的和 query 相关"。
 
 **需要信息**:
 - query 文本（通过 `retrieval_completed` 上报）
-- 前 K 个 prompt_chunks 的 content
+- 前 K 个 prompt_chunks 的 content（K 默认为 5）
 - embedding 函数（服务端配置）
 
 **计算方式**:
@@ -41,23 +52,24 @@ topK_similarity = mean(similarities) if similarities else 0.0
 ```
 
 **使用场景**:
-- 评估 prompt 中最关键 chunks 与 query 的语义贴合度
-- 无 gold data 时的质量参考指标
-- 对比不同 embedding 模型的效果
+- 无 gold data 时评估检索质量的参考指标
+- 对比不同 embedding 模型或切分策略的效果
 - 监控检索质量退化
 
 **指导价值**:
-- **高值（>0.7）**: prompt chunks 与 query 高度相关，检索质量好
-- **低值（<0.5）**: prompt chunks 与 query 相关性低，可能需要优化检索策略
+- **高值（>0.7）**: 前 K 个 prompt chunks 与 query 高度相关，检索质量好
+- **低值（<0.5）**: 前 K 个 prompt chunks 与 query 相关性低，检索或排序策略可能需要优化
 
 ---
 
 ### 2. prompt_chunk_answer_similarity
 
-**指标名称**: prompt_chunk_answer_similarity（prompt chunks 与 answer 的相似度）
+**指标名称**: prompt_chunk_answer_similarity（prompt_chunks 对 answer 的支撑度）
+
+> 不同于 topK_chunk_query_similarity 只取前 K 个，此指标对**所有** prompt_chunks 计算，评估它们整体对最终 answer 的贡献。高值说明 LLM 确实在利用 prompt 中的 chunks 来生成回答；低值说明 chunks 和答案内容关联弱，可能检索到了不相关内容或 LLM 忽视了提供的上下文。
 
 **需要信息**:
-- prompt_chunks（通过 `prompt_built` 上报）
+- 所有 prompt_chunks（通过 `prompt_built` 上报）
 - answer 文本（通过 `answer_generated` 上报）
 - embedding 函数（服务端配置）
 
@@ -70,19 +82,20 @@ prompt_answer_similarity = mean(similarities) if similarities else 0.0
 ```
 
 **使用场景**:
-- 衡量 prompt chunks 对答案的实际贡献
-- 指导 prompt 或 chunk 策略优化
-- 发现检索到但未有效使用的 chunks
+- 衡量 prompt_chunks 对答案的实际贡献
+- 指导 prompt 构建或 chunk 筛选策略优化
 
 **指导价值**:
-- **高值（>0.6）**: prompt chunks 对 answer 有实际贡献
-- **低值（<0.4）**: prompt chunks 对 answer 贡献低，可能需要优化 chunk 选择或 prompt 构建策略
+- **高值（>0.6）**: prompt_chunks 对 answer 有实际贡献
+- **低值（<0.4）**: prompt_chunks 对 answer 贡献低，可能需要优化 chunk 选择策略或检查 prompt 构建逻辑
 
 ---
 
-### 3. semantic_recall_vs_gold（可选）
+### 3. exact_recall_vs_gold_chunks（可选）
 
-**指标名称**: semantic_recall_vs_gold（相对于 gold chunks 的语义召回率）
+**指标名称**: exact_recall_vs_gold_chunks（retrieved_chunks 对 gold chunks 的 chunk_id 精确命中率）
+
+> **注意**：此指标是 chunk_id 的精确匹配，不做语义比较。即使内容高度相关但 chunk_id 不同，也不算命中。需要提前通过 `gold_chunks` 事件上报标注数据。
 
 **需要信息**:
 - retrieved_chunks（通过 `retrieval_completed` 上报）
@@ -90,25 +103,27 @@ prompt_answer_similarity = mean(similarities) if similarities else 0.0
 
 **计算方式**:
 ```python
-# 简化版本：只检查 chunk_id 是否匹配
+# 只检查 chunk_id 是否匹配（非语义相似度）
 retrieved_chunk_ids = {c.chunk_id for c in retrieved_chunks}
 gold_chunk_ids = {g.chunk_id for g in gold_chunks}
 hit_count = len(retrieved_chunk_ids & gold_chunk_ids)
-semantic_recall = hit_count / len(gold_chunk_ids) if gold_chunk_ids else 0.0
+exact_recall = hit_count / len(gold_chunk_ids) if gold_chunk_ids else 0.0
 ```
 
 **使用场景**:
-- 评估检索系统对 gold chunks 的召回能力
+- 评估检索系统对 gold chunks 的精确召回能力
 - Benchmark 评测
 - 验证检索系统的准确性
 
-**注意**：当前实现为简化版本，只检查 chunk_id 是否匹配。如需语义相似度匹配（非严格 ID 匹配），需要扩展实现。
+**注意**：此指标为 chunk_id 精确命中率，不做语义匹配。同一内容若 chunk_id 不同则不计入命中。
 
 ---
 
 ### 4. rank_delta（版本对比）
 
 **指标名称**: rank_delta（排名变化）
+
+> **前提**：需要传入 `prev_run_id`。只对两个版本中都出现的 chunk_id 计算排名变化，新增或丢失的 chunks 不纳入此指标。
 
 **需要信息**:
 - 当前 run 的 retrieved_chunks（按 score 排序）
@@ -132,7 +147,9 @@ rank_delta = rank_in_current - rank_in_prev
 
 ### 5. new_chunks_ratio（版本对比）
 
-**指标名称**: new_chunks_ratio（新增 chunks 比例）
+**指标名称**: new_chunks_ratio（新增 retrieved chunks 占当前版本的比例）
+
+> **前提**：需要传入 `prev_run_id`。统计当前版本 retrieved_chunks 中有多少是上一版本没有的，反映版本切换后检索结果的"变化幅度"。
 
 **需要信息**:
 - 当前 run 的 retrieved_chunks
@@ -152,7 +169,9 @@ new_chunks_ratio = len(set(current_chunks) - set(prev_chunks)) / len(current_chu
 
 ### 6. new_chunks_query_similarity（版本对比 + embedding）
 
-**指标名称**: new_chunks_query_similarity（新增 chunks 与 query 的相似度）
+**指标名称**: new_chunks_query_similarity（新增 retrieved chunks 与 query 的关联度）
+
+> **前提**：需要传入 `prev_run_id`。计算对象是当前版本相比上一版本**新增**的 retrieved chunks（不是 prompt_chunks），评估新引入的 chunks 是否与 query 相关。与 `new_chunks_ratio` 配合使用：ratio 说明变化多少，此指标说明变化是否有价值。
 
 **需要信息**:
 - 新增 chunks embeddings
@@ -168,18 +187,20 @@ new_chunks_query_similarity = mean(similarities) if similarities else 0.0
 ```
 
 **使用场景**:
-- 评估新增 chunks 与 query 的相关度
-- **高值表示新版本改进效果好**
+- 评估版本升级后新引入的 retrieved chunks 是否与 query 相关
+- 与 `dropped_chunks_query_similarity` 配合判断版本升级是否有效
 
 **指导价值**:
-- **高值（>0.6）**: 新增 chunks 与 query 高度相关，新版本改进有效
-- **低值（<0.4）**: 新增 chunks 与 query 相关性低，新版本改进可能无效或引入噪音
+- **高值（>0.6）**: 新增 chunks 与 query 高度相关，版本升级引入了有效内容
+- **低值（<0.4）**: 新增 chunks 与 query 相关性低，版本升级可能引入了噪音
 
 ---
 
 ### 7. dropped_chunks_query_similarity（版本对比 + embedding）
 
-**指标名称**: dropped_chunks_query_similarity（丢弃 chunks 与 query 的相似度）
+**指标名称**: dropped_chunks_query_similarity（丢失 retrieved chunks 与 query 的关联度）
+
+> **前提**：需要传入 `prev_run_id`。计算对象是上一版本有、当前版本没有的 retrieved chunks，评估被丢弃的内容是否原本与 query 相关。此指标是版本升级的"代价检测"——高值意味着丢掉了重要内容。
 
 **需要信息**:
 - 丢弃的 chunks embeddings
@@ -195,12 +216,12 @@ dropped_chunks_query_similarity = mean(similarities) if similarities else 0.0
 ```
 
 **使用场景**:
-- 评估丢弃 chunks 与 query 的相关度
-- **高值表示新版本改动可能影响质量**
+- 检测版本升级是否丢失了重要的检索内容
+- 与 `new_chunks_query_similarity` 配合综合判断版本升级效果
 
 **指导价值**:
-- **高值（>0.6）**: 丢弃的 chunks 与 query 高度相关，新版本可能丢失了重要信息
-- **低值（<0.4）**: 丢弃的 chunks 与 query 相关性低，新版本改进有效
+- **高值（>0.6）**: 丢弃的 chunks 与 query 高度相关，新版本可能丢失了重要信息，需关注
+- **低值（<0.4）**: 丢弃的 chunks 与 query 相关性低，说明丢弃的是噪音，版本升级有效
 
 ---
 
@@ -288,7 +309,7 @@ CREATE TABLE metric (
 
 #### POST /api/v1/prompt/built
 
-上报 prompt 构建事件
+上报 prompt 构建事件（prompt_chunks 是 retrieved_chunks 的子集，即实际放入 LLM prompt 的 chunks）
 
 ```json
 {
@@ -339,8 +360,8 @@ CREATE TABLE metric (
 获取 run 的基础指标
 
 **查询参数**:
-- `prev_run_id` (UUID, 可选): 上一版本的 run_id，用于计算版本对比指标
-- `include_extended` (bool, 可选): 是否包含扩展指标，默认 `false`
+- `prev_run_id` (UUID, 可选): 上一版本的 run_id，用于计算版本对比指标（`new_chunks_ratio`, `rank_deltas`）
+- `include_extended` (bool, 可选): 是否包含扩展指标，默认 `false`。需要配置 embedding 函数
 
 **响应**:
 ```json
@@ -363,20 +384,22 @@ CREATE TABLE metric (
     "extended_metrics": {
         "topK_chunk_query_similarity": 0.85,
         "prompt_chunk_answer_similarity": 0.78,
-        "semantic_recall_vs_gold": 0.8,
-        "new_chunks_query_similarity": 0.72,
-        "dropped_chunks_query_similarity": 0.45
+        "exact_recall_vs_gold_chunks": 0.8,
+        "new_chunks_query_similarity": null,
+        "dropped_chunks_query_similarity": null
     }
 }
 ```
 
+> `new_chunks_query_similarity` 和 `dropped_chunks_query_similarity` 需要 `prev_run_id` 才会有值，单独查询时返回 `null`。
+
 #### GET /api/v1/run/{run_id}/retrieval_diff
 
-获取两个 run 的检索差异（版本对比）
+获取两个 run 的检索差异（版本对比）。`new_chunks_query_similarity` 和 `dropped_chunks_query_similarity` 仅在此接口（传入 `prev_run_id`）时计算。
 
 **查询参数**:
 - `prev_run_id` (UUID, 必填): 上一版本的 run_id
-- `include_extended` (bool, 可选): 是否包含扩展指标，默认 `false`
+- `include_extended` (bool, 可选): 是否包含语义扩展指标，默认 `false`
 
 **响应**:
 ```json
@@ -398,6 +421,7 @@ CREATE TABLE metric (
 - `rank_delta > 0`: 排名下降（变差）
 - `rank_delta < 0`: 排名上升（变好）
 - `rank_delta = 0`: 排名不变
+- `rank_deltas` 会持久化到 `metrics.value_json`，可复用与审计
 
 ---
 
@@ -540,38 +564,38 @@ def compute_extended_metrics(run_id, prev_run_id=None):
     answer = get_answer(run_id)
     prompt_chunks = get_prompt_chunks(run_id)
     
-    # 1. topK_chunk_query_similarity
+    # 1. topK_chunk_query_similarity（基于 prompt_chunks 前 K 个）
     query_emb = embed(query)
-    topK_chunks = prompt_chunks[:K]
+    topK_chunks = prompt_chunks[:K]  # prompt_chunks 是 retrieved_chunks 的子集
     topK_embs = [embed(c.content) for c in topK_chunks]
     topK_sim = mean([cosine_similarity(query_emb, c_emb) for c_emb in topK_embs])
     save_metric(run_id, "topK_chunk_query_similarity", topK_sim)
     
-    # 2. prompt_chunk_answer_similarity
+    # 2. prompt_chunk_answer_similarity（基于全部 prompt_chunks）
     answer_emb = embed(answer)
     prompt_embs = [embed(c.content) for c in prompt_chunks]
     prompt_answer_sim = mean([cosine_similarity(c_emb, answer_emb) for c_emb in prompt_embs])
     save_metric(run_id, "prompt_chunk_answer_similarity", prompt_answer_sim)
 
-    # 3. semantic_recall_vs_gold (可选)
+    # 3. exact_recall_vs_gold_chunks (可选)
     gold = get_gold_chunks(run_id)
     if gold:
         retrieved = get_retrieved_chunks(run_id)
         hit_count = len(set(retrieved) & set(gold))
-        semantic_recall = hit_count / len(gold)
-        save_metric(run_id, "semantic_recall_vs_gold", semantic_recall)
+        exact_recall = hit_count / len(gold)
+        save_metric(run_id, "exact_recall_vs_gold_chunks", exact_recall)
 
-    # 4. 版本对比的语义相似度指标
+    # 4. 版本对比的语义关联度指标（需要 prev_run_id）
     if prev_run_id:
         prev_retrieved = get_retrieved_chunks(prev_run_id)
-        new_chunks = set(current) - set(prev_retrieved)
-        dropped_chunks = set(prev_retrieved) - set(current)
+        new_chunks = set(current) - set(prev_retrieved)    # 当前有、上一版没有
+        dropped_chunks = set(prev_retrieved) - set(current)  # 上一版有、当前没有
 
-        # 新增 chunks 与 query 相似度
+        # 新增 retrieved chunks 与 query 关联度
         new_chunks_query_sim = mean([cosine_similarity(embed(c.content), query_emb) for c in new_chunks]) if new_chunks else 0
         save_metric(run_id, "new_chunks_query_similarity", new_chunks_query_sim)
 
-        # 丢弃 chunks 与 query 相似度
+        # 丢失 retrieved chunks 与 query 关联度
         dropped_chunks_query_sim = mean([cosine_similarity(embed(c.content), query_emb) for c in dropped_chunks]) if dropped_chunks else 0
         save_metric(run_id, "dropped_chunks_query_similarity", dropped_chunks_query_sim)
 ```
@@ -651,7 +675,7 @@ diff = rag_client.get_retrieval_diff(run_v2.id, run_v1.id, include_extended=True
 ### Phase 3: 扩展指标（已完成）
 - [x] compute_topK_chunk_query_similarity
 - [x] compute_prompt_chunk_answer_similarity
-- [x] compute_semantic_recall_vs_gold (简化版本)
+- [x] compute_semantic_recall_vs_gold → exact_recall_vs_gold_chunks (chunk_id 精确命中)
 - [x] compute_new_chunks_query_similarity
 - [x] compute_dropped_chunks_query_similarity
 

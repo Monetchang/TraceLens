@@ -10,14 +10,16 @@ class RetrievedChunkRepository:
     
     def bulk_create(self, run_id: UUID, chunks: list[dict]):
         """批量创建 retrieved chunks"""
-        for chunk in chunks:
-            rc = RetrievedChunk(
+        objs = [
+            RetrievedChunk(
                 run_id=run_id,
-                chunk_id=chunk["chunk_id"],
-                content=chunk.get("content"),
-                score=chunk.get("score")
+                chunk_id=c["chunk_id"],
+                content=c.get("content"),
+                score=c.get("score")
             )
-            self.db.add(rc)
+            for c in chunks
+        ]
+        self.db.add_all(objs)
         self.db.commit()
     
     def get_by_run(self, run_id: UUID) -> list[RetrievedChunk]:
@@ -30,12 +32,8 @@ class PromptChunkRepository:
     
     def bulk_create(self, run_id: UUID, chunk_ids: list[str]):
         """批量创建 prompt chunks"""
-        for chunk_id in chunk_ids:
-            pc = PromptChunk(
-                run_id=run_id,
-                chunk_id=chunk_id
-            )
-            self.db.add(pc)
+        objs = [PromptChunk(run_id=run_id, chunk_id=cid) for cid in chunk_ids]
+        self.db.add_all(objs)
         self.db.commit()
     
     def get_by_run(self, run_id: UUID) -> list[PromptChunk]:
@@ -48,9 +46,8 @@ class GoldChunkRepository:
     
     def bulk_create(self, run_id: UUID, chunk_ids: list[str]):
         """批量创建 gold chunks"""
-        for chunk_id in chunk_ids:
-            gc = GoldChunk(run_id=run_id, chunk_id=chunk_id)
-            self.db.add(gc)
+        objs = [GoldChunk(run_id=run_id, chunk_id=cid) for cid in chunk_ids]
+        self.db.add_all(objs)
         self.db.commit()
     
     def get_by_run(self, run_id: UUID) -> list[GoldChunk]:

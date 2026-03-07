@@ -88,7 +88,7 @@ def main():
             print(f"    Run B: {item['run_id_b']}")
             
             # 选择几个关键指标显示
-            key_metrics = ["topK_chunk_query_similarity", "prompt_chunk_answer_similarity", "semantic_recall_vs_gold"]
+            key_metrics = ["topK_chunk_query_similarity", "prompt_chunk_answer_similarity", "exact_recall_vs_gold_chunks"]
             
             for metric_name in key_metrics:
                 if metric_name in item["metrics_delta"]:

@@ -34,7 +34,7 @@
 |------|-------------|------------------|
 | **关注点** | **检索质量**、召回率 | 推理效率、路径质量、连通性 |
 | **Gold 数据** | **gold_answer**, **gold_chunk_ids**, **gold_doc_ids** | gold_path, gold_nodes |
-| **关键指标** | **topK_chunk_query_similarity**, **semantic_recall_vs_gold** | branch_explosion_ratio, reasoning_hops |
+| **关键指标** | **topK_chunk_query_similarity**, **exact_recall_vs_gold_chunks** | branch_explosion_ratio, reasoning_hops |
 | **版本对比重点** | **检索结果变化** | 推理跳数变化、分支爆炸比改善 |
 
 ---
@@ -340,8 +340,8 @@ print(f"检索质量: {retrieval_delta['avg_a']:.4f} → {retrieval_delta['avg_b
 print(f"改善: {retrieval_delta['percent_change']:.1f}%")
 
 # 分析召回率
-if "semantic_recall_vs_gold" in comparison["metrics_delta"]:
-    recall_delta = comparison["metrics_delta"]["semantic_recall_vs_gold"]
+if "exact_recall_vs_gold_chunks" in comparison["metrics_delta"]:
+    recall_delta = comparison["metrics_delta"]["exact_recall_vs_gold_chunks"]
     print(f"召回率: {recall_delta['avg_a']:.4f} → {recall_delta['avg_b']:.4f}")
 ```
 
@@ -400,6 +400,8 @@ Content-Type: application/json
 GET /api/v1/evaluation/{evaluation_id}/metrics?similarity_mode=lexical&include_per_query=false
 ```
 
+聚合时按 `similarity_mode` 过滤指标，lexical/embedding/llm 各自独立，避免混算。
+
 **响应示例**：
 
 ```json
@@ -423,7 +425,7 @@ GET /api/v1/evaluation/{evaluation_id}/metrics?similarity_mode=lexical&include_p
       "min": 0.50,
       "max": 0.99
     },
-    "semantic_recall_vs_gold": {
+    "exact_recall_vs_gold_chunks": {
       "avg": 0.85,
       "p50": 0.90,
       "p95": 1.0,
@@ -466,7 +468,7 @@ GET /api/v1/evaluation/compare?eval_a={uuid}&eval_b={uuid}&similarity_mode=lexic
       "p95_a": 0.92,
       "p95_b": 0.96
     },
-    "semantic_recall_vs_gold": {
+    "exact_recall_vs_gold_chunks": {
       "avg_a": 0.85,
       "avg_b": 0.90,
       "delta": 0.05,
@@ -545,7 +547,7 @@ comparison = eval_client.compare_evaluations(eval_a_id, eval_b_id)
 |------|------|------|--------|
 | `topK_chunk_query_similarity` | 检索质量 | [0, 1] | ≥ 0.7 |
 | `prompt_chunk_answer_similarity` | 答案支撑程度 | [0, 1] | ≥ 0.8 |
-| `semantic_recall_vs_gold` | 召回率（需 gold data） | [0, 1] | ≥ 0.8 |
+| `exact_recall_vs_gold_chunks` | chunk_id 精确召回率（需 gold data） | [0, 1] | ≥ 0.8 |
 | `new_chunks_ratio` | 新增 chunk 比例（版本对比） | [0, 1] | - |
 | `dropped_chunks_ratio` | 丢失 chunk 比例（版本对比） | [0, 1] | < 0.1 |
 
@@ -562,7 +564,7 @@ comparison = eval_client.compare_evaluations(eval_a_id, eval_b_id)
 1. 创建测试集（100个典型问题）
 2. v1.0：使用 `text-embedding-ada-002` 运行评测
 3. v2.0：使用 `text-embedding-3-large` 运行评测
-4. 对比 `topK_chunk_query_similarity` 和 `semantic_recall_vs_gold`
+4. 对比 `topK_chunk_query_similarity` 和 `exact_recall_vs_gold_chunks`
 
 **期望结果**：v2.0 的检索质量和召回率都有提升
 
@@ -684,11 +686,11 @@ comparison = eval_client.compare_evaluations(eval_512["id"], eval_1024["id"])
 - 版本对比指标（`new_chunks_ratio`, `dropped_chunks_ratio`）
 
 **需要 gold 数据的指标**（gold-aware）：
-- `semantic_recall_vs_gold`（需要 `gold_chunk_ids`）
+- `exact_recall_vs_gold_chunks`（需要 `gold_chunk_ids`）
 
 **建议**：
 - 初期没有 gold 数据时，关注 `topK_chunk_query_similarity`
-- 后期有能力标注 gold 数据时，再关注 `semantic_recall_vs_gold`
+- 后期有能力标注 gold 数据时，再关注 `exact_recall_vs_gold_chunks`
 
 ### 3. 评测运行很慢怎么办？
 
@@ -787,7 +789,7 @@ RAG 批量评测系统的核心价值：
 > **让 RAG 的检索质量和召回率从"凭感觉"变成"有数据支撑"的系统化评估。**
 
 **三个关键能力**：
-1. 🎯 **聚合指标**：系统化评估检索质量（topK_chunk_query_similarity）和召回率（semantic_recall_vs_gold）
+1. 🎯 **聚合指标**：系统化评估检索质量（topK_chunk_query_similarity）和召回率（exact_recall_vs_gold_chunks）
 2. 📊 **版本对比**：量化 embedding 模型、检索参数优化的效果
 3. 🔍 **Per-Query 分析**：识别哪些问题改进显著、哪些仍需优化
 
