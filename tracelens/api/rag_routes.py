@@ -12,7 +12,7 @@ from tracelens.core.rag_metrics_simple import compute_all_metrics
 from tracelens.api.rag_schemas import (
     RetrievalCompletedRequest, PromptBuiltRequest, AnswerGeneratedRequest,
     GoldChunksRequest, RunFinishedRequest,
-    MetricsResponse, RetrievalDiffResponse
+    MetricsResponse, RetrievalDiffResponse, ExtendedMetricValue
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -118,23 +118,50 @@ def get_metrics(
     for m in sorted(db_metrics, key=lambda x: (0 if x.similarity_mode == "" else 1)):
         if m.value is not None:
             metrics_dict[m.name] = m.value
-    metrics_dict.update({k: v for k, v in metrics.items() if k != "rank_deltas" and isinstance(v, (int, float))})
-    
+    metrics_dict.update({k: v for k, v in metrics.items() if k != "rank_deltas" and k != "_similarity_mode_used" and isinstance(v, (int, float))})
+    effective_mode = metrics.get("_similarity_mode_used", similarity_mode)
+
     # 分离基础指标和扩展指标
     extended_keys = {
         "topK_chunk_query_similarity",
         "prompt_chunk_answer_similarity",
         "exact_recall_vs_gold_chunks",
         "new_chunks_query_similarity",
-        "dropped_chunks_query_similarity"
+        "dropped_chunks_query_similarity",
+        "answer_faithfulness"
     }
     base_metrics = {k: v for k, v in metrics_dict.items() if k not in extended_keys}
-    extended_metrics = {k: v for k, v in metrics_dict.items() if k in extended_keys} if similarity_mode else None
-    
+    raw_extended = {k: v for k, v in metrics_dict.items() if k in extended_keys} if similarity_mode else None
+
+    # 方案1: 为扩展指标注入 reliability 和 note（使用实际生效的 mode，含 LLM 采样降级）
+    reliability_map = {
+        "lexical": ("low", "基于词面重叠近似，不代表检索关联度"),
+        "embedding": ("medium", "语义相似度近似关联度，建议配合 gold_chunks 使用 exact_recall 指标"),
+        "llm": ("high", "LLM 直接评估 query-chunk 关联度、chunk-answer 支撑度"),
+    }
+    rel, note = reliability_map.get(effective_mode, ("low", ""))
+
+    extended_metrics = None
+    if raw_extended:
+        extended_metrics = {
+            k: ExtendedMetricValue(value=v, reliability=rel, note=note)
+            for k, v in raw_extended.items()
+            if v is not None and isinstance(v, (int, float))
+        }
+
+    # 方案2: gold_available 和 evaluation_note
+    gold_repo = GoldChunkRepository(db)
+    gold_available = len(gold_repo.get_by_run(run_id)) > 0
+    evaluation_note = None
+    if not gold_available:
+        evaluation_note = "未上报 gold_chunks，当前相似度指标仅为参考值。上报 gold_chunks 可获得更可信的 exact_recall 指标。"
+
     return MetricsResponse(
         run_id=run_id,
         metrics=base_metrics,
-        extended_metrics=extended_metrics
+        extended_metrics=extended_metrics if extended_metrics else None,
+        gold_available=gold_available,
+        evaluation_note=evaluation_note
     )
 
 

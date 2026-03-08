@@ -62,6 +62,21 @@ Provide a support score (0.0 to 1.0) where:
 
 Return ONLY a number between 0.0 and 1.0.
 Score:"""
+
+    FAITHFULNESS_PROMPT = """Given the following retrieved chunks and an answer, evaluate how faithfully the answer is grounded in the chunks.
+
+Chunks:
+{chunks}
+
+Answer: {answer}
+
+Score (0.0 to 1.0):
+- 0.0: Answer is completely fabricated, no support in chunks
+- 0.5: Answer partially supported
+- 1.0: Answer is fully grounded in the chunks
+
+Return ONLY a number between 0.0 and 1.0.
+Score:"""
     
     def __init__(self, config: Optional[Dict] = None):
         super().__init__(config)
@@ -134,5 +149,25 @@ Score:"""
             # 确保在 [0, 1] 范围内
             return max(0.0, min(1.0, score))
         except ValueError:
+            return 0.0
+
+    def compute_faithfulness(self, chunks_text: str, answer: str) -> float:
+        """评估 answer 对 chunks 的忠实度（仅 LLM 模式）"""
+        if not chunks_text or not answer:
+            return 0.0
+        if not self.llm_client:
+            raise ValueError("LLM client not configured")
+        raw_key = f"faithfulness|{chunks_text[:500]}|{answer[:500]}"
+        cache_key = hashlib.sha256(raw_key.encode()).hexdigest()
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        try:
+            prompt = self.FAITHFULNESS_PROMPT.format(chunks=chunks_text, answer=answer)
+            response = self.llm_client(prompt)
+            score = self._parse_score(response)
+            self.cache[cache_key] = score
+            return score
+        except Exception as e:
+            logger.warning("LLM faithfulness judgment failed: %s", e)
             return 0.0
 

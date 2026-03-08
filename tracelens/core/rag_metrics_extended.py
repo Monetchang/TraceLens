@@ -50,10 +50,11 @@ def compute_topk_query_similarity(
         top_k_chunks = prompt_chunks[:K]
         
         similarities = []
+        query_doc_ctx = {"source_role": "query", "target_role": "document"}
         for pc in top_k_chunks:
             chunk = retrieved.get(pc.chunk_id)
             if chunk and chunk.content:
-                sim = similarity_engine.compute(run.query, chunk.content)
+                sim = similarity_engine.compute(run.query, chunk.content, context=query_doc_ctx)
                 similarities.append(sim)
         
         if len(similarities) == 0:
@@ -115,6 +116,46 @@ def compute_prompt_chunk_answer_similarity(
         return sum(similarities) / len(similarities)
     except Exception as e:
         logger.warning("Failed to compute prompt_chunk_answer_similarity: %s", e)
+        return None
+
+
+def compute_answer_faithfulness(
+    run_id: UUID,
+    db: Session,
+    similarity_engine: Optional[SimilarityEngine] = None
+) -> Optional[float]:
+    """
+    评估 answer 对 prompt chunks 的忠实度（仅 LLM 模式）
+    """
+    run_repo = RunRepository(db)
+    run = run_repo.get(run_id)
+    if not run or not run.answer:
+        return None
+
+    prompt_repo = PromptChunkRepository(db)
+    prompt_chunks = prompt_repo.get_by_run(run_id)
+    if len(prompt_chunks) == 0:
+        return None
+
+    retrieved_repo = RetrievedChunkRepository(db)
+    retrieved = {c.chunk_id: c for c in retrieved_repo.get_by_run(run_id)}
+
+    chunk_parts = []
+    for i, pc in enumerate(prompt_chunks):
+        c = retrieved.get(pc.chunk_id)
+        if c and c.content:
+            chunk_parts.append(f"[{i+1}] {c.content}")
+    chunks_text = "\n\n---\n\n".join(chunk_parts)
+    if not chunks_text:
+        return None
+
+    if similarity_engine is None or not hasattr(similarity_engine, "compute_faithfulness"):
+        return None
+
+    try:
+        return similarity_engine.compute_faithfulness(chunks_text, run.answer)
+    except Exception as e:
+        logger.warning("Failed to compute answer_faithfulness: %s", e)
         return None
 
 
@@ -183,10 +224,11 @@ def compute_new_chunks_query_similarity(
         similarity_engine = get_similarity_engine("lexical")
     
     try:
+        query_doc_ctx = {"source_role": "query", "target_role": "document"}
         similarities = []
         for chunk in new_chunks:
             if chunk.content:
-                sim = similarity_engine.compute(run.query, chunk.content)
+                sim = similarity_engine.compute(run.query, chunk.content, context=query_doc_ctx)
                 similarities.append(sim)
         
         if len(similarities) == 0:
@@ -236,10 +278,11 @@ def compute_dropped_chunks_query_similarity(
         similarity_engine = get_similarity_engine("lexical")
     
     try:
+        query_doc_ctx = {"source_role": "query", "target_role": "document"}
         similarities = []
         for chunk in dropped_chunks:
             if chunk.content:
-                sim = similarity_engine.compute(run.query, chunk.content)
+                sim = similarity_engine.compute(run.query, chunk.content, context=query_doc_ctx)
                 similarities.append(sim)
         
         if len(similarities) == 0:

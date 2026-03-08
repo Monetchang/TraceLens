@@ -114,6 +114,29 @@ GET /api/v1/run/{run_id}/metrics?similarity_mode=embedding
 metrics = rag_client.get_metrics(run_id, similarity_mode="embedding")
 ```
 
+### Asymmetric Embedding（检索关联度优化）
+
+默认的 Embedding 模式对 query 和 chunk 使用**相同**的编码方式（对称），衡量的是"语义相似度"。但 RAG 评估需要的是"检索关联度"——chunk 能否回答 query。部分 embedding 模型支持对 query 和 document 分别指定 `input_type`，可提升 query-chunk 关联度计算的准确性。
+
+**配置方式**（环境变量）：
+
+```bash
+# 阿里云 text-embedding-v3 / Cohere embed-v3
+EMBEDDING_INPUT_TYPE_QUERY=query
+EMBEDDING_INPUT_TYPE_DOC=document
+```
+
+**支持 Asymmetric Embedding 的模型**：
+
+| 模型 | `input_type` 参数名 | query 值 | doc 值 |
+|------|---------------------|----------|--------|
+| 阿里云百炼 `text-embedding-v3` | `input_type` | `query` | `document` |
+| Cohere `embed-v3` | `input_type` | `search_query` | `search_document` |
+| `BAAI/bge-m3`（Ollama/本地） | instruction 前缀 | 需自定义 function | 需自定义 function |
+| OpenAI `text-embedding-3-*` | 不支持 | — | — |
+
+**不支持** Asymmetric 的模型（如 OpenAI text-embedding-3）将使用对称模式，不设置 `EMBEDDING_INPUT_TYPE_*` 即可。
+
 ---
 
 ## 三、LLM 模式

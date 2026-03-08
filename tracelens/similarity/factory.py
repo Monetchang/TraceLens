@@ -38,18 +38,23 @@ def _get_llm_client():
 
 
 def _build_embedding_from_config() -> Optional[Callable]:
-    """从环境变量构建 embedding 函数（支持 OpenAI 兼容格式、Ollama、腾讯混元）"""
-    from tracelens.config import EMBEDDING_ENDPOINT, EMBEDDING_API_KEY, EMBEDDING_MODEL
+    """从环境变量构建 embedding 函数（支持 OpenAI 兼容格式、Ollama、腾讯混元、Asymmetric）"""
+    from tracelens.config import (
+        EMBEDDING_ENDPOINT, EMBEDDING_API_KEY, EMBEDDING_MODEL,
+        EMBEDDING_INPUT_TYPE_QUERY, EMBEDDING_INPUT_TYPE_DOC
+    )
     if not EMBEDDING_ENDPOINT:
         return None
     import numpy as np
     headers = {"Authorization": f"Bearer {EMBEDDING_API_KEY}"} if EMBEDDING_API_KEY else {}
     client = _get_embedding_client()
 
-    def _embed(text: str):
+    def _embed(text: str, input_type: str = ""):
         payload = {"input": text}
         if EMBEDDING_MODEL:
             payload["model"] = EMBEDDING_MODEL
+        if input_type:
+            payload["input_type"] = input_type
         r = client.post(EMBEDDING_ENDPOINT, json=payload, headers=headers)
         r.raise_for_status()
         data = r.json()
@@ -69,6 +74,21 @@ def _build_embedding_from_config() -> Optional[Callable]:
         raise ValueError(f"Unrecognized embedding response format: {list(data.keys()) if isinstance(data, dict) else type(data)}")
 
     return _embed
+
+
+def _build_asymmetric_embedding_config() -> Optional[dict]:
+    """若配置了 input_type，返回 query/doc 两个 callable 的 config"""
+    from tracelens.config import EMBEDDING_INPUT_TYPE_QUERY, EMBEDDING_INPUT_TYPE_DOC
+    if not EMBEDDING_INPUT_TYPE_QUERY or not EMBEDDING_INPUT_TYPE_DOC:
+        return None
+    base_embed = _build_embedding_from_config()
+    if not base_embed:
+        return None
+    return {
+        "embedding_function": lambda t: base_embed(t, ""),
+        "query_embedding_function": lambda t: base_embed(t, EMBEDDING_INPUT_TYPE_QUERY),
+        "doc_embedding_function": lambda t: base_embed(t, EMBEDDING_INPUT_TYPE_DOC),
+    }
 
 
 def _build_llm_from_config() -> Optional[Callable]:
@@ -105,10 +125,14 @@ def get_similarity_engine(
     if mode == "lexical":
         return LexicalSimilarityEngine(cfg)
     if mode == "embedding":
-        if "embedding_function" not in cfg:
-            emb_fn = _build_embedding_from_config()
-            if emb_fn:
-                cfg = {**cfg, "embedding_function": emb_fn}
+        if "embedding_function" not in cfg and "query_embedding_function" not in cfg:
+            asym = _build_asymmetric_embedding_config()
+            if asym:
+                cfg = {**cfg, **asym}
+            else:
+                emb_fn = _build_embedding_from_config()
+                if emb_fn:
+                    cfg = {**cfg, "embedding_function": emb_fn}
         return EmbeddingSimilarityEngine(cfg)
     if mode == "llm":
         if "llm_client" not in cfg:

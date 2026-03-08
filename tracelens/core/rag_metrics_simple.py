@@ -61,12 +61,19 @@ def compute_all_metrics(
     
     # 扩展指标（使用 similarity engine）
     if similarity_mode:
+        # 方案3: LLM 采样 - 按 LLM_SAMPLE_RATE 决定是否使用 LLM，否则降级到 lexical
+        import random
+        from tracelens.config import LLM_SAMPLE_RATE
+        if similarity_mode == "llm" and random.random() > LLM_SAMPLE_RATE:
+            similarity_mode = "lexical"
+
         from tracelens.core.rag_metrics_extended import (
             compute_topk_query_similarity,
             compute_prompt_chunk_answer_similarity,
             compute_semantic_recall_vs_gold,
             compute_new_chunks_query_similarity,
-            compute_dropped_chunks_query_similarity
+            compute_dropped_chunks_query_similarity,
+            compute_answer_faithfulness
         )
         
         # 创建 similarity engine
@@ -90,6 +97,12 @@ def compute_all_metrics(
         exact_recall = compute_semantic_recall_vs_gold(run_id, threshold=0.8, db=db)
         if exact_recall is not None:
             metrics["exact_recall_vs_gold_chunks"] = exact_recall
+
+        # answer_faithfulness（仅 LLM 模式）
+        if hasattr(similarity_engine, "compute_faithfulness"):
+            faith = compute_answer_faithfulness(run_id, db=db, similarity_engine=similarity_engine)
+            if faith is not None:
+                metrics["answer_faithfulness"] = faith
         
         # 版本对比的语义相似度指标
         if prev_run_id:
@@ -120,4 +133,5 @@ def compute_all_metrics(
             metadata={"similarity_mode": similarity_mode},
             similarity_mode=similarity_mode or "",
         )
+    metrics["_similarity_mode_used"] = similarity_mode
     return metrics

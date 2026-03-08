@@ -188,6 +188,8 @@ TraceLens 提供三个示例：
 
 ## 关联度计算模式
 
+> **完整说明**：Lexical / Embedding / LLM 三种模式的计算原理、配置方式、Asymmetric Embedding 支持模型等详见 **[相似度引擎文档](SIMILARITY_ENGINE.md)**。
+
 TraceLens 提供三种模式计算 chunk 与 query 的**关联度**、chunk 对 answer 的**支撑度**（lexical/embedding 用相似度近似）：
 
 ### 1. Lexical 模式（默认，零配置）
@@ -509,7 +511,7 @@ curl "http://localhost:8000/api/v1/evaluation/compare?eval_a={id_a}&eval_b={id_b
 
 ## 关联度计算模式（批量评测）
 
-配置方式与单 Run 分析完全相同（设置环境变量即可），只需在调用时传入 `similarity_mode`：
+配置方式与单 Run 分析相同，调用时传入 `similarity_mode` 即可。各平台环境变量配置、Asymmetric Embedding 等详见 **[相似度引擎文档](SIMILARITY_ENGINE.md)**。
 
 ```python
 # Lexical（默认，零配置）
@@ -522,8 +524,6 @@ metrics = eval_client.get_evaluation_metrics(eval_id, similarity_mode="embedding
 metrics = eval_client.get_evaluation_metrics(eval_id, similarity_mode="llm")
 ```
 
-各平台具体的环境变量配置参见上方「关联度计算模式」章节。
-
 ---
 
 ## 文档索引
@@ -532,4 +532,4 @@ metrics = eval_client.get_evaluation_metrics(eval_id, similarity_mode="llm")
 - **[RAG 指标文档](RAG_METRICS.md)** - 单 run 指标详解
 - **[GraphRAG 批量评测指南](GRAPH_EVALUATION_GUIDE.md)** - GraphRAG 批量评测
 - **[GraphRAG 指标文档](GRAPHRAG_METRICS.md)** - GraphRAG 推理路径指标
-- **[相似度引擎](SIMILARITY_ENGINE.md)** - Lexical / Embedding / LLM 模式
+- **[相似度引擎](SIMILARITY_ENGINE.md)** - 关联度计算模式详解（Lexical / Embedding / LLM、各平台配置、Asymmetric Embedding）

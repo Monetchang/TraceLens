@@ -1,4 +1,4 @@
-# TraceLens RAG MVP 指标文档
+# TraceLens RAG 指标文档
 
 ## 核心设计理念
 

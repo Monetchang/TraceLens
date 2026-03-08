@@ -50,17 +50,27 @@ class GraphRAGClient:
             "path": path
         })
     
-    def get_graph_metrics(self, run_id: UUID, include_semantic: bool = False) -> dict:
+    def get_graph_metrics(
+        self,
+        run_id: UUID,
+        include_semantic: bool = False,
+        include_grounding: bool = True
+    ) -> dict:
         """
         获取 GraphRAG 指标
-        
+
         Args:
             run_id: Run ID
             include_semantic: 是否包含语义指标（需要 LLM）
+            include_grounding: 是否包含答案支撑指标
         """
-        url = f"/api/v1/run/{run_id}/graph-metrics"
+        params = []
         if include_semantic:
-            url += "?include_semantic=true"
+            params.append("include_semantic=true")
+        params.append(f"include_grounding={'true' if include_grounding else 'false'}")
+        url = f"/api/v1/run/{run_id}/graph-metrics"
+        if params:
+            url += "?" + "&".join(params)
         return self.client._get(url)
     
     def get_reasoning_path(self, run_id: UUID) -> dict:

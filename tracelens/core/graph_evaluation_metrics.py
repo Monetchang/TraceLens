@@ -18,6 +18,7 @@ def compute_graph_evaluation_metrics(
     evaluation_id: UUID,
     db: Session,
     include_semantic: bool = False,
+    include_grounding: bool = True,
     include_per_query: bool = False,
     llm_client=None
 ) -> Dict[str, Any]:
@@ -28,6 +29,7 @@ def compute_graph_evaluation_metrics(
         evaluation_id: 评测任务 ID
         db: 数据库会话
         include_semantic: 是否包含语义指标（LLM Judge）
+        include_grounding: 是否包含答案支撑指标
         include_per_query: 是否包含每个问题的详细指标
         llm_client: LLM 客户端（如果需要计算语义指标）
     
@@ -80,7 +82,8 @@ def compute_graph_evaluation_metrics(
             "aggregate_metrics": {
                 "structural": {},
                 "quality": {},
-                "semantic": {}
+                "semantic": {},
+                "grounding": {}
             },
             "per_query_metrics": [] if include_per_query else None
         }
@@ -95,7 +98,8 @@ def compute_graph_evaluation_metrics(
         run_metrics = {
             "structural": {},
             "quality": {},
-            "semantic": {}
+            "semantic": {},
+            "grounding": {}
         }
         
         # 如果数据库中有 GraphRAG 指标，直接使用
@@ -123,9 +127,10 @@ def compute_graph_evaluation_metrics(
                 
                 # 计算 GraphRAG 指标
                 computed = compute_all_graph_metrics(
-                    run.id, db, 
+                    run.id, db,
                     gold_path=gold_path,
                     include_semantic=include_semantic,
+                    include_grounding=include_grounding,
                     llm_client=llm_client
                 )
                 
@@ -140,11 +145,11 @@ def compute_graph_evaluation_metrics(
     aggregate_metrics = {
         "structural": {},
         "quality": {},
-        "semantic": {}
+        "semantic": {},
+        "grounding": {}
     }
-    
-    # 聚合每个类别的指标
-    for category in ["structural", "quality", "semantic"]:
+
+    for category in ["structural", "quality", "semantic", "grounding"]:
         # 收集所有指标名称
         metric_names = set()
         for run_id, metrics in all_run_metrics.items():
@@ -200,6 +205,7 @@ def compute_graph_evaluation_comparison(
     eval_b_id: UUID,
     db: Session,
     include_semantic: bool = False,
+    include_grounding: bool = True,
     include_per_query: bool = False,
     llm_client=None
 ) -> Dict[str, Any]:
@@ -249,14 +255,16 @@ def compute_graph_evaluation_comparison(
     
     # 获取两个评测的指标
     metrics_a = compute_graph_evaluation_metrics(
-        eval_a_id, db, 
+        eval_a_id, db,
         include_semantic=include_semantic,
+        include_grounding=include_grounding,
         include_per_query=True,
         llm_client=llm_client
     )
     metrics_b = compute_graph_evaluation_metrics(
         eval_b_id, db,
         include_semantic=include_semantic,
+        include_grounding=include_grounding,
         include_per_query=True,
         llm_client=llm_client
     )
@@ -265,10 +273,11 @@ def compute_graph_evaluation_comparison(
     metrics_delta = {
         "structural": {},
         "quality": {},
-        "semantic": {}
+        "semantic": {},
+        "grounding": {}
     }
-    
-    for category in ["structural", "quality", "semantic"]:
+
+    for category in ["structural", "quality", "semantic", "grounding"]:
         agg_a = metrics_a["aggregate_metrics"].get(category, {})
         agg_b = metrics_b["aggregate_metrics"].get(category, {})
         
@@ -317,10 +326,11 @@ def compute_graph_evaluation_comparison(
             metrics_delta_per_query = {
                 "structural": {},
                 "quality": {},
-                "semantic": {}
+                "semantic": {},
+                "grounding": {}
             }
-            
-            for category in ["structural", "quality", "semantic"]:
+
+            for category in ["structural", "quality", "semantic", "grounding"]:
                 metrics_a_cat = item_a["metrics"].get(category, {}) if item_a else {}
                 metrics_b_cat = item_b["metrics"].get(category, {}) if item_b else {}
                 

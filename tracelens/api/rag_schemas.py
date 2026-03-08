@@ -29,10 +29,19 @@ class RunFinishedRequest(BaseModel):
     status: str = "success"
 
 
+class ExtendedMetricValue(BaseModel):
+    """扩展指标值，含 reliability 和 note"""
+    value: float
+    reliability: str  # low, medium, high
+    note: str
+
+
 class MetricsResponse(BaseModel):
     run_id: UUID
     metrics: dict  # 基础指标: new_chunks_ratio
-    extended_metrics: Optional[dict] = None  # 扩展指标（需要 embedding）
+    extended_metrics: Optional[dict] = None  # 扩展指标: {name: ExtendedMetricValue} 或 {name: float} 兼容
+    gold_available: bool = False
+    evaluation_note: Optional[str] = None
 
 
 class RetrievalDiffResponse(BaseModel):

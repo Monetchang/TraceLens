@@ -114,3 +114,11 @@ class ReasoningTraceRepository:
         ).update({"is_selected": True}, synchronize_session=False)
         self.db.commit()
 
+    def get_selected_path_edges(self, run_id: UUID) -> List["ReasoningTrace"]:
+        """获取选中路径的边（与 get_selected_path 相同，别名）"""
+        return self.get_selected_path(run_id)
+
+    def get_explored_branches(self, run_id: UUID) -> List["ReasoningTrace"]:
+        """获取所有探索分支（每个 graph_expand 事件一条）"""
+        return self.get_by_run(run_id)
+

@@ -24,9 +24,10 @@ class PathSelectedRequest(BaseModel):
 class GraphMetricsResponse(BaseModel):
     """GraphRAG 指标响应"""
     run_id: UUID
-    structural_metrics: dict  # 结构性指标
-    quality_metrics: Optional[dict] = None  # 路径质量指标
-    semantic_metrics: Optional[dict] = None  # 语义合理性指标
+    structural_metrics: dict
+    quality_metrics: Optional[dict] = None
+    semantic_metrics: Optional[dict] = None
+    grounding_metrics: Optional[dict] = None
 
 
 class ReasoningPathResponse(BaseModel):

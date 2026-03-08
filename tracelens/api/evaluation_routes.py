@@ -378,22 +378,24 @@ def compare_evaluations(
 def get_graph_evaluation_metrics(
     evaluation_id: UUID,
     include_semantic: bool = Query(False, description="是否包含语义指标（LLM Judge）"),
+    include_grounding: bool = Query(True, description="是否包含答案支撑指标"),
     include_per_query: bool = Query(False, description="是否包含每个问题的详细指标"),
     db: Session = Depends(get_db)
 ):
     """获取 GraphRAG 评测任务的聚合指标"""
     eval_repo = EvaluationRepository(db)
     evaluation = eval_repo.get(evaluation_id)
-    
+
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
-    
+
     try:
         metrics_data = compute_graph_evaluation_metrics(
-            evaluation_id, db, 
+            evaluation_id, db,
             include_semantic=include_semantic,
+            include_grounding=include_grounding,
             include_per_query=include_per_query,
-            llm_client=None  # TODO: 添加 LLM 客户端支持
+            llm_client=None
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to compute graph metrics: {str(e)}")
@@ -406,6 +408,7 @@ def compare_graph_evaluations(
     eval_a: UUID = Query(..., description="第一个评测任务 ID"),
     eval_b: UUID = Query(..., description="第二个评测任务 ID"),
     include_semantic: bool = Query(False, description="是否包含语义指标"),
+    include_grounding: bool = Query(True, description="是否包含答案支撑指标"),
     include_per_query: bool = Query(False, description="是否包含每个问题的详细对比"),
     db: Session = Depends(get_db)
 ):
@@ -414,8 +417,9 @@ def compare_graph_evaluations(
         comparison_data = compute_graph_evaluation_comparison(
             eval_a, eval_b, db,
             include_semantic=include_semantic,
+            include_grounding=include_grounding,
             include_per_query=include_per_query,
-            llm_client=None  # TODO: 添加 LLM 客户端支持
+            llm_client=None
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

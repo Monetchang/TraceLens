@@ -1,616 +1,866 @@
-```markdown
-# TraceLens GraphRAG 评测指标文档
+# TraceLens GraphRAG 指标文档
 
-> **GraphRAG 的评测不是"找得像不像"，而是"推理走得对不对"。**  
-> **TraceLens 评测的是推理轨迹，而不是文本片段。**
+## 核心设计理念
 
----
+TraceLens GraphRAG 专注于 **推理路径质量评估** 和 **版本变化分析**，不试图替代通用评测体系，而是回答：
 
-## 核心理念
+> **当你更换剪枝策略、搜索算法或图结构时，推理能力到底发生了什么变化？**
 
-GraphRAG 的核心是**基于知识图谱的推理**，而不是简单的文本检索。TraceLens GraphRAG 评测体系专注于：
+GraphRAG 的评测不是"找得像不像"，而是 **推理走得对不对**。
 
-1. **推理路径是否存在** - 基础正确性
-2. **推理路径是否连贯** - 结构完整性
-3. **推理路径是否合理** - 语义合理性
+TraceLens 评测的是 **推理轨迹（reasoning trace）**，而不是文本片段。
 
 ---
 
-## 指标体系（三层架构）
+## 名词说明
 
-### 第一层：结构性指标（Structural Metrics）
+- **graph_expand**：图扩展事件，每次 GraphRAG 探索一条新边时上报。
+- **path_selected**：路径选择事件，GraphRAG 确定最终推理路径时上报。
+- **explored_nodes**：搜索过程中所有被访问过的节点（含被剪枝的），通过 `graph_expand` 上报。
+- **selected_path**：选中的推理路径（节点序列），通过 `path_selected` 上报。是 explored_nodes 的子集，数量通常更少。
+- **gold_path**：人工标注的正确推理路径（可选），用于 Benchmark 评测。
+- **gold_nodes**：应该覆盖到的关键节点集合（可选），gold_path 的节点提取结果。
 
-**特点**：无需 LLM，纯结构分析，零成本
+---
 
-| 指标名称 | 类型 | 范围 | 说明 | 使用场景 |
-|---------|------|------|------|----------|
-| **path_exists** | boolean | True/False | 是否存在推理路径 | 基础正确性判断 |
-| **reasoning_hops** | integer | [0, ∞) | 推理跳数 | 判断推理链长度是否合理 |
-| **connectivity_score** | float | [0.0, 1.0] | 图连通性得分 | 判断检索节点是否形成连通子图 |
+## 指标分类
 
-#### 1.1 path_exists
+TraceLens GraphRAG 提供 **四层指标**：
 
-**定义**：判断是否存在从起点到终点的推理路径
+1. **结构性指标（零成本）**：不依赖 embedding 或 LLM，纯路径结构计算。
+   - `path_exists`：是否存在有效推理路径
+   - `reasoning_hops`：推理跳数
+   - `connectivity_score`：图连通性得分
 
-**计算方式**：
+2. **路径质量指标**（需要 `prev_run_id` 做版本对比，或需要 gold_nodes）：
+   - `branch_explosion_ratio`：分支爆炸比（单 run 可算）
+   - `irrelevant_branch_ratio`：无关分支比例（单 run 可算）
+   - `path_coverage`：路径覆盖度（需要 gold_nodes）
+
+3. **语义合理性指标（LLM Judge）**：需要 LLM 调用，成本较高。
+   - `path_relevance_score`：路径语义相关性
+   - `relation_chain_validity`：关系链合法性
+
+4. **答案支撑指标（Answer Grounding）**：需要 LLM 调用。
+   - `answer_grounded_in_path_score`：答案证据支撑度
+   - `unsupported_claim_ratio`：无证据声明比例
+
+---
+
+## 一、核心指标详解
+
+### 1. path_exists
+
+**指标名称**: path_exists（是否存在推理路径）
+
+> GraphRAG 系统的基础健康检查。若 `selected_path` 为空，说明图搜索未找到任何有效路径，后续所有路径质量指标均无意义。
+
+**需要信息**:
+- `selected_path`（通过 `path_selected` 上报）
+
+**计算方式**:
 ```python
 path_exists = len(selected_path) > 0
 ```
 
-**使用场景**：
-- 防止"拍脑袋回答"（没有推理路径）
-- 判断 GraphRAG 系统是否正常工作
+**使用场景**:
+- GraphRAG 系统健康检查
+- 监控"无路径回答"的发生频率
+- 在路径不存在时提前告警，跳过其他指标计算
 
-**示例**：
-```python
-# 如果 path_exists = False
-# 说明：系统没有找到推理路径，可能是：
-# 1. 图数据不完整
-# 2. 搜索策略过于保守
-# 3. 剪枝过度
-```
+**指导价值**:
+- **True**: 系统正常找到推理路径
+- **False**: 图搜索失败，需检查图结构、起始节点或搜索配置
 
 ---
 
-#### 1.2 reasoning_hops
+### 2. reasoning_hops
 
-**定义**：推理路径的跳数（边的数量）
+**指标名称**: reasoning_hops（推理跳数）
 
-**计算方式**：
+> 推理路径中边的数量，衡量推理链的长度与复杂度。跳数过少可能说明推理过于简单（未充分利用图结构），跳数过多可能存在冗余推理或搜索失控。
+
+**需要信息**:
+- `selected_path`（节点序列）
+
+**计算方式**:
 ```python
-reasoning_hops = len(selected_path_edges)
+reasoning_hops = len(selected_path) - 1  # 节点数 - 1 = 边数
 ```
 
-**使用场景**：
-- 判断推理链是否过长或过短
-- 指导 max_hops 参数调优
-- 版本对比：同一问题，不同版本的推理跳数
+**使用场景**:
+- 判断推理链长度是否合理
+- 调整 `max_hops` 参数
+- 对比不同搜索策略下推理深度的变化
 
-**示例**：
-```python
-# Query: "Alice 和 Project_AI 的关系"
-# Path: Alice -> Company_X -> Project_AI
-# reasoning_hops = 2
+**指导价值**:
 
-# 如果 reasoning_hops = 10
-# 可能需要优化：
-# 1. 增加剪枝
-# 2. 调整 beam_size
-# 3. 引入更强的相关性过滤
-```
+| hops | 含义 |
+| ---- | ---- |
+| 1-3  | 简单推理，适合事实性 query |
+| 4-6  | 正常多跳推理 |
+| >10  | 可能存在推理冗余，需审查路径 |
 
 ---
 
-#### 1.3 connectivity_score
+### 3. connectivity_score
 
-**定义**：检索到的节点是否形成连通子图
+**指标名称**: connectivity_score（图连通性得分）
 
-**计算方式**：
+> 衡量检索到的节点是否形成连通子图。高连通性说明 GraphRAG 检索到的节点之间有紧密关联；低连通性说明搜索过于发散，检索到一堆孤立节点，推理路径可能不连贯。
+
+**需要信息**:
+- `explored_nodes`（所有被访问节点）
+- 节点间的边关系（来自 `graph_expand` 事件）
+
+**计算方式**:
 ```python
 connectivity_score = largest_connected_component_size / total_retrieved_nodes
 ```
 
-**使用场景**：
-- 判断 Graph 搜索是否"散点化"
-- 评估检索质量（连通的图更有可能形成有效推理）
+**使用场景**:
+- 评估图搜索的聚焦程度
+- 诊断搜索算法是否偏离主题
+- 对比不同图结构下的连通性变化
 
-**示例**：
+**指导价值**:
+
+| score   | 含义 |
+| ------- | ---- |
+| >0.8    | 图结构良好，节点高度关联 |
+| 0.3-0.8 | 正常，部分发散可接受 |
+| <0.3    | 搜索过于发散，需优化剪枝策略 |
+
+---
+
+### 4. branch_explosion_ratio
+
+**指标名称**: branch_explosion_ratio（分支爆炸比）
+
+> 衡量搜索空间的扩展程度：探索了多少节点，最终只用了多少。比值越高说明搜索效率越低，大量计算资源浪费在无效分支上。
+
+**需要信息**:
+- `explored_nodes`（总探索节点数，通过 `graph_expand` 累计）
+- `selected_path`（最终选中的路径节点数）
+
+**计算方式**:
 ```python
-# 如果 connectivity_score = 0.3
-# 说明：只有 30% 的节点是连通的
-# 可能原因：
-# 1. 检索策略过于发散
-# 2. 缺少关键连接边
-# 3. 图数据质量问题
+branch_explosion_ratio = total_explored_nodes / len(selected_path_nodes)
+```
+
+**使用场景**:
+- 评估搜索算法效率
+- 指导剪枝策略优化
+- 对比不同搜索算法（BFS/DFS/Beam Search）的效率
+
+**指导价值**:
+
+| ratio | 含义 |
+| ----- | ---- |
+| <5    | 搜索效率优秀 |
+| 5-10  | 良好，正常范围 |
+| >10   | 搜索效率低，建议增强剪枝 |
+
+---
+
+### 5. irrelevant_branch_ratio
+
+**指标名称**: irrelevant_branch_ratio（无关分支比例）
+
+> 衡量探索节点中与 query 语义无关的比例。此指标需要 embedding 计算各节点与 query 的相似度，判断是否偏离主题。高值意味着大量搜索资源消耗在与 query 无关的方向上。
+
+**需要信息**:
+- `explored_nodes` 的内容（节点文本）
+- query 文本
+- embedding 函数（服务端配置）
+
+**计算方式**:
+```python
+node_embs = [embed(node.content) for node in explored_nodes]
+query_emb = embed(query)
+similarities = [cosine_similarity(node_emb, query_emb) for node_emb in node_embs]
+
+# 低于阈值（默认 0.3）的节点视为无关分支
+irrelevant_count = sum(1 for s in similarities if s < IRRELEVANCE_THRESHOLD)
+irrelevant_branch_ratio = irrelevant_count / len(explored_nodes)
+```
+
+**使用场景**:
+- 判断搜索是否偏离 query 方向
+- 优化语义过滤策略
+- 对比不同 embedding 模型对搜索方向的影响
+
+**指导价值**:
+- **低值（<0.2）**: 搜索聚焦，探索节点大多与 query 相关
+- **高值（>0.5）**: 搜索偏离严重，需优化语义过滤或起始节点选择
+
+---
+
+### 6. path_coverage
+
+**指标名称**: path_coverage（路径覆盖度）
+
+> **前提**：需要提前上报 `gold_nodes`。计算 selected_path 中的节点对 gold_nodes 的覆盖比例。此指标是 GraphRAG 版本的 `exact_recall_vs_gold_chunks`，评估推理路径是否覆盖了标注的关键节点。
+
+> **注意**：此指标是节点 ID 的精确匹配，不做语义比较。
+
+**需要信息**:
+- `selected_path`（通过 `path_selected` 上报）
+- `gold_nodes`（通过 `gold_path` 事件上报，可选）
+
+**计算方式**:
+```python
+selected_node_ids = set(node.id for node in selected_path)
+gold_node_ids = set(node.id for node in gold_nodes)
+path_coverage = len(selected_node_ids & gold_node_ids) / len(gold_node_ids) if gold_node_ids else 0.0
+```
+
+**使用场景**:
+- Benchmark 评测
+- A/B 测试不同搜索策略
+- 验证推理路径对标注关键节点的精确命中率
+
+**指导价值**:
+- **高值（>0.8）**: 推理路径覆盖了大部分关键节点
+- **低值（<0.5）**: 推理路径遗漏了重要节点，需优化搜索策略
+
+---
+
+### 7. path_relevance_score
+
+**指标名称**: path_relevance_score（路径语义相关性）
+
+> 使用 LLM 判断推理路径整体是否与 query 相关、是否支持生成 answer。不同于 `irrelevant_branch_ratio` 只看节点级相似度，此指标从语义层面整体判断路径质量。
+
+**需要信息**:
+- query 文本
+- `selected_path`（节点序列及关系标签）
+- answer 文本（可选，辅助判断）
+- LLM Judge 配置（服务端配置）
+
+**计算方式**:
+```python
+score = llm_judge(
+    prompt=f"Query: {query}\nReasoning Path: {format_path(selected_path)}\nAnswer: {answer}",
+    task="rate_path_relevance"  # 输出 0.0-1.0
+)
+```
+
+**使用场景**:
+- 评估推理路径的整体语义质量
+- 对比不同搜索策略生成路径的语义合理性
+- 与结构指标配合：`path_exists=True` 但 `path_relevance_score` 低，说明找到了路径但路径不对
+
+**指导价值**:
+- **高值（>0.8）**: 路径与 query 高度相关，推理方向正确
+- **低值（<0.5）**: 路径语义偏离，即使结构完整也无法支撑正确回答
+
+---
+
+### 8. relation_chain_validity
+
+**指标名称**: relation_chain_validity（关系链合法性）
+
+> 判断推理路径中相邻节点之间的关系是否构成合理的逻辑链。纯结构上连通不等于语义上合理——`Alice -> works_at -> Company_X -> located_in -> City_Y` 是合理链，但 `Alice -> born_in -> Company_X` 就是错误关系。
+
+**需要信息**:
+- `selected_path`（节点序列 + 关系标签，需在 `graph_expand` 时上报 `relation` 字段）
+
+**计算方式**:
+```python
+# 方式一：规则判断（基于关系类型白名单）
+valid_pairs = [(r1, r2) for r1, r2 in zip(path_relations[:-1], path_relations[1:])
+               if is_valid_transition(r1, r2)]
+validity = len(valid_pairs) / len(path_relations) if path_relations else 0.0
+
+# 方式二：LLM Judge（更准确）
+validity = llm_relation_check(
+    prompt=f"Reasoning path: {format_path_with_relations(selected_path)}",
+    task="validate_relation_chain"  # 输出 0.0-1.0
+)
+```
+
+**使用场景**:
+- 检测推理路径中的逻辑错误
+- 验证图谱关系类型设计是否合理
+- 诊断 GraphRAG 是否产生了"结构合理但语义荒谬"的路径
+
+**指导价值**:
+- **高值（>0.8）**: 关系链逻辑合理
+- **低值（<0.5）**: 路径中存在关系跳跃或逻辑矛盾，需审查图谱数据质量
+
+---
+
+### 9. answer_grounded_in_path_score
+
+**指标名称**: answer_grounded_in_path_score（答案证据支撑度）
+
+> 判断最终 answer 中有多少内容可以在推理路径中找到证据支撑。对应 RAG 指标中的 `prompt_chunk_answer_similarity`，但 GraphRAG 版本针对结构化路径而非文本片段。
+
+**需要信息**:
+- answer 文本（通过 `answer_generated` 上报）
+- `selected_path`（节点序列及关系）
+- LLM Judge 配置
+
+**计算流程**:
+```python
+# 1. 从 answer 中抽取 claims
+claims = extract_claims(answer)
+
+# 2. 对每个 claim，在推理路径中查找支撑证据
+supported_claims = [
+    claim for claim in claims
+    if llm_judge(claim, reasoning_path, task="check_support")
+]
+
+# 3. 计算支持比例
+answer_grounded_in_path_score = len(supported_claims) / len(claims) if claims else 0.0
+```
+
+**使用场景**:
+- 衡量推理路径对最终回答的实际贡献
+- 检测 LLM 是否忽略了图谱信息，自行编造答案
+- 与 `path_relevance_score` 配合：路径相关但 grounding 低，说明 LLM 未充分利用路径
+
+**指导价值**:
+- **高值（>0.8）**: 答案大部分来自推理路径，幻觉少
+- **低值（<0.5）**: 答案内容与推理路径关联弱，可能存在大量幻觉
+
+---
+
+### 10. unsupported_claim_ratio
+
+**指标名称**: unsupported_claim_ratio（无证据声明比例）
+
+> `answer_grounded_in_path_score` 的补集，直接衡量答案中 hallucination 的比例。高值意味着 LLM 在推理路径之外自行"编造"了大量内容。
+
+**需要信息**:
+- answer 文本
+- `selected_path`
+- LLM Judge 配置
+
+**计算方式**:
+```python
+unsupported_claim_ratio = 1.0 - answer_grounded_in_path_score
+# 或
+unsupported_claim_ratio = unsupported_claims / total_claims
+```
+
+**使用场景**:
+- 检测答案中的 hallucination
+- 监控 GraphRAG 系统的可信度
+- 对比不同 LLM 在相同推理路径下的幻觉率
+
+**指导价值**:
+
+| ratio   | 含义 |
+| ------- | ---- |
+| <0.1    | 几乎无 hallucination |
+| 0.1-0.3 | 可接受，存在少量推断 |
+| >0.3    | 幻觉较多，需关注 |
+
+---
+
+## 二、数据上报
+
+### 数据库表结构
+
+GraphRAG 复用 RAG 的 `run` 和 `metric` 表，新增图谱专用表：
+
+#### 1. run 表（复用）
+```sql
+CREATE TABLE run (
+    id UUID PRIMARY KEY,
+    name VARCHAR,
+    query TEXT,
+    answer TEXT,
+    version_id VARCHAR,
+    status VARCHAR,
+    metadata JSONB,
+    started_at TIMESTAMP,
+    ended_at TIMESTAMP
+);
+```
+
+#### 2. graph_expand 表
+```sql
+CREATE TABLE graph_expand (
+    id UUID PRIMARY KEY,
+    run_id UUID REFERENCES run(id),
+    from_node VARCHAR,
+    to_node VARCHAR,
+    relation VARCHAR,
+    step_index INT,
+    created_at TIMESTAMP
+);
+```
+
+#### 3. graph_path 表
+```sql
+CREATE TABLE graph_path (
+    run_id UUID REFERENCES run(id) PRIMARY KEY,
+    path JSONB,  -- 节点序列，如 ["Alice", "Company_X", "Project_AI"]
+    created_at TIMESTAMP
+);
+```
+
+#### 4. gold_path 表（可选）
+```sql
+CREATE TABLE gold_path (
+    run_id UUID REFERENCES run(id) PRIMARY KEY,
+    gold_nodes JSONB,  -- 关键节点 ID 列表
+    created_at TIMESTAMP
+);
+```
+
+#### 5. metric 表（复用）
+```sql
+CREATE TABLE metric (
+    id UUID PRIMARY KEY,
+    run_id UUID REFERENCES run(id),
+    name VARCHAR,
+    value FLOAT,
+    value_json JSONB,
+    metadata JSONB,
+    created_at TIMESTAMP
+);
 ```
 
 ---
 
-### 第二层：路径质量指标（Quality Metrics）
+### 上报接口
 
-**特点**：基于结构分析，可选 gold data
+#### POST /api/v1/graph/expand
 
-| 指标名称 | 类型 | 范围 | 说明 | 使用场景 |
-|---------|------|------|------|----------|
-| **branch_explosion_ratio** | float | [1.0, ∞) | 分支爆炸比 | 评估剪枝策略有效性 |
-| **path_coverage** | float | [0.0, 1.0] | 路径覆盖度（需要 gold） | 评估推理路径正确性 |
+上报图扩展事件（每探索一条边调用一次）
 
-#### 2.1 branch_explosion_ratio
-
-**定义**：总探索节点数 / 选中路径节点数
-
-**计算方式**：
-```python
-branch_explosion_ratio = total_explored_nodes / selected_path_nodes
+```json
+{
+    "run_id": "uuid",
+    "from_node": "Alice",
+    "to_node": "Company_X",
+    "relation": "works_at",
+    "step_index": 1
+}
 ```
 
-**使用场景**：
-- 判断剪枝策略是否有效
-- 版本对比：优化后的版本应该降低此比值
-- 成本优化：比值越低，搜索效率越高
+#### POST /api/v1/graph/path_selected
 
-**示例**：
-```python
-# 场景1：v1.0 baseline
-# total_explored_nodes = 100
-# selected_path_nodes = 5
-# branch_explosion_ratio = 20.0
+上报最终选中的推理路径
 
-# 场景2：v2.0 优化剪枝
-# total_explored_nodes = 30
-# selected_path_nodes = 5
-# branch_explosion_ratio = 6.0
-
-# 结论：v2.0 减少了 70% 的不必要探索
+```json
+{
+    "run_id": "uuid",
+    "path": ["Alice", "Company_X", "Project_AI"]
+}
 ```
 
-**优化建议**：
-- `< 5.0`: 优秀，剪枝策略有效
-- `5.0 - 10.0`: 良好
-- `> 10.0`: 需要优化剪枝
+#### POST /api/v1/gold/path（可选）
 
----
+上报 gold path 标注数据
 
-#### 2.2 path_coverage（可选，需要 gold path）
-
-**定义**：选中路径对 gold path 的覆盖度
-
-**计算方式**：
-```python
-path_coverage = len(selected_nodes ∩ gold_nodes) / len(gold_nodes)
+```json
+{
+    "run_id": "uuid",
+    "gold_nodes": ["Alice", "Company_X", "Project_AI"]
+}
 ```
 
-**使用场景**：
-- Benchmark 测试
-- 判断推理路径是否在正确轨道上
-- A/B 测试不同策略
+#### POST /api/v1/answer/generated（复用）
 
-**示例**：
-```python
-# Gold Path: Alice -> Company_X -> Project_AI -> Team_ML
-# Selected Path: Alice -> Company_X -> Project_AI
+上报 answer 生成事件（与 RAG 共用）
 
-# path_coverage = 3/4 = 0.75
+```json
+{
+    "run_id": "uuid",
+    "answer": "Alice works at Company_X which is located in City_Y."
+}
+```
 
-# 解读：
-# - 覆盖了 75% 的 gold path
-# - 缺少最后一跳（可能被剪枝）
+#### POST /api/v1/run/finished（复用）
+
+```json
+{
+    "run_id": "uuid",
+    "status": "success"
+}
 ```
 
 ---
 
-### 第三层：语义合理性指标（Semantic Metrics）
+## 三、API 接口
 
-**特点**：使用 LLM Judge，成本较高，精度最高
+### 查询接口
 
-| 指标名称 | 类型 | 范围 | 说明 | 使用场景 |
-|---------|------|------|------|----------|
-| **path_relevance_score** | float | [0.0, 1.0] | 推理路径相关性 | 评估路径是否逻辑上支持答案 |
+#### GET /api/v1/run/{run_id}/graph-metrics
 
-#### 3.1 path_relevance_score
+获取 GraphRAG run 的完整指标
 
-**定义**：使用 LLM 判断推理路径是否逻辑上支持回答 query
+**查询参数**:
+- `include_semantic` (bool, 可选): 是否计算语义指标（`path_relevance_score`, `relation_chain_validity`），需要 LLM，默认 `false`
+- `include_grounding` (bool, 可选): 是否计算答案支撑指标，默认 `true`；无 answer 时返回 `null`
 
-**计算方式**：
-```python
-# 输入给 LLM：
-# - Query
-# - Reasoning Path (A → B → C)
-# - Answer
-
-# 输出：0.0 - 1.0 相关性得分
+**响应**:
+```json
+{
+    "run_id": "uuid",
+    "structural_metrics": {
+        "path_exists": true,
+        "reasoning_hops": 2,
+        "connectivity_score": 0.85
+    },
+    "quality_metrics": {
+        "branch_explosion_ratio": 6.0,
+        "irrelevant_branch_ratio": 0.15,
+        "path_coverage": 0.75
+    },
+    "semantic_metrics": {
+        "path_relevance_score": 0.92,
+        "relation_chain_validity": 0.88
+    },
+    "grounding_metrics": {
+        "answer_grounded_in_path_score": 0.81,
+        "unsupported_claim_ratio": 0.12
+    }
+}
 ```
 
-**Prompt 模板**：
+> `semantic_metrics` 和 `grounding_metrics` 在未传入对应 include 参数时返回 `null`。
+
+#### GET /api/v1/run/{run_id}/graph_diff
+
+获取两个 run 的图推理差异（版本对比）
+
+**查询参数**:
+- `prev_run_id` (UUID, 必填): 上一版本的 run_id
+
+**响应**:
+```json
+{
+    "run_id": "uuid",
+    "prev_run_id": "uuid",
+    "path_length_delta": -1,
+    "new_nodes": ["Project_AI"],
+    "dropped_nodes": ["Company_Y"],
+    "connectivity_delta": 0.05,
+    "branch_explosion_delta": -2.0
+}
 ```
-Please evaluate whether the reasoning path logically supports answering the query.
 
-Query: {query}
-
-Reasoning Path:
-{path_desc}
-
-Answer: {answer}
-
-Provide a relevance score (0.0 to 1.0) where:
-- 0.0: Path is irrelevant or illogical
-- 0.5: Path is partially relevant
-- 1.0: Path strongly supports the answer
-
-Return ONLY a number between 0.0 and 1.0.
-Score:
-```
-
-**使用场景**：
-- 高精度评估
-- Benchmark 测试
-- 关键决策验证
-
-**示例**：
-```python
-# Query: "Alice 和 Project_AI 的关系"
-# Path: Alice --[works_at]-> Company_X --[runs]-> Project_AI
-# Answer: "Alice works at Company X, which runs Project AI."
-
-# path_relevance_score = 0.95
-# 解读：推理路径高度支持答案
-```
+**字段说明**:
+- `path_length_delta`: 推理跳数变化（负值=路径变短）
+- `new_nodes`: 当前版本路径中新增的节点（上一版本没有）
+- `dropped_nodes`: 上一版本路径中丢失的节点（当前版本没有）
+- `connectivity_delta`: 连通性得分变化
+- `branch_explosion_delta`: 分支爆炸比变化（负值=搜索效率提升）
 
 ---
 
-## 指标使用建议
+## 四、使用流程
 
-### 渐进式评估策略
+1. **创建 run**
+   ```python
+   POST /api/v1/run/start
+   {"name": "graph_query", "metadata": {"version_id": "v1.0"}}
+   ```
 
-```
-阶段1：开发阶段
-  └─ 使用结构性指标（免费，快速）
+2. **上报图扩展事件**（每探索一条边调用一次）
+   ```python
+   POST /api/v1/graph/expand
+   {"run_id": "...", "from_node": "Alice", "to_node": "Company_X", "relation": "works_at", "step_index": 1}
+   ```
 
-阶段2：测试阶段
-  └─ 添加路径质量指标（如果有 gold data）
+3. **上报选中推理路径**
+   ```python
+   POST /api/v1/graph/path_selected
+   {"run_id": "...", "path": ["Alice", "Company_X", "Project_AI"]}
+   ```
 
-阶段3：关键决策
-  └─ 使用语义合理性指标（LLM Judge）
-```
+4. **上报 answer**
+   ```python
+   POST /api/v1/answer/generated
+   {"run_id": "...", "answer": "Alice works at Company_X..."}
+   ```
 
-### 成本优化
+5. **上报 gold path（可选）**
+   ```python
+   POST /api/v1/gold/path
+   {"run_id": "...", "gold_nodes": ["Alice", "Company_X"]}
+   ```
 
-| 指标层级 | 成本 | 速度 | 精度 | 建议使用频率 |
-|---------|------|------|------|-------------|
-| 结构性 | 免费 | 毫秒级 | 中 | 100% |
-| 质量 | 免费 | 毫秒级 | 中-高 | 80% |
-| 语义 | 高 | 秒级 | 高 | 20% (关键 case) |
+6. **结束 run**
+   ```python
+   POST /api/v1/run/finished
+   {"run_id": "...", "status": "success"}
+   ```
+
+7. **查询指标**
+   ```python
+   # 查询结构指标 + 质量指标 + grounding
+   GET /api/v1/run/{run_id}/graph-metrics
+
+   # 查询全量指标（含 LLM 语义指标）
+   GET /api/v1/run/{run_id}/graph-metrics?include_semantic=true&include_grounding=true
+
+   # 查询版本对比
+   GET /api/v1/run/{run_id}/graph_diff?prev_run_id={prev_run_id}
+   ```
 
 ---
 
-## API 使用示例
-
-### 基本使用
+## 五、SDK 示例
 
 ```python
-from sdk.graph_client import GraphRAGClient
+from sdk.graph_client import GraphClient
+from sdk.client import TraceLensClient
 
-graph_client = GraphRAGClient("http://localhost:8000")
+# 初始化
+base_client = TraceLensClient("http://localhost:8000")
+graph_client = GraphClient("http://localhost:8000")
 
-# 1. 上报图扩展事件
+# 1. 创建 run
+run = base_client.start_run(
+    name="graph_query",
+    metadata={"version_id": "v1.0"}
+)
+
+# 2. 上报图扩展事件
 graph_client.graph_expand(
-    run_id=run_id,
+    run_id=run.id,
     from_node="Alice",
     to_node="Company_X",
     relation="works_at",
     step_index=1
 )
+graph_client.graph_expand(
+    run_id=run.id,
+    from_node="Company_X",
+    to_node="Project_AI",
+    relation="owns",
+    step_index=2
+)
 
-# 2. 上报路径选择
+# 3. 上报选中路径
 graph_client.path_selected(
-    run_id=run_id,
+    run_id=run.id,
     path=["Alice", "Company_X", "Project_AI"]
 )
 
-# 3. 获取指标（结构性 + 质量）
-metrics = graph_client.get_graph_metrics(run_id)
-print(metrics['structural_metrics'])
-print(metrics['quality_metrics'])
+# 4. 上报 answer
+graph_client.answer_generated(run.id, "Alice works at Company_X which owns Project_AI.")
 
-# 4. 获取指标（包含语义）
-metrics = graph_client.get_graph_metrics(run_id, include_semantic=True)
-print(metrics['semantic_metrics'])
-```
+# 5. 上报 gold path（可选）
+graph_client.gold_path(run.id, gold_nodes=["Alice", "Company_X"])
 
-### 版本对比
+# 6. 结束 run
+graph_client.run_finished(run.id, "success")
 
-```python
-# 对比两个版本的推理效率
-metrics_v1 = graph_client.get_graph_metrics(run_v1_id)
-metrics_v2 = graph_client.get_graph_metrics(run_v2_id)
+# 7. 查询指标
+metrics = graph_client.get_graph_metrics(run.id, include_semantic=True, include_grounding=True)
+print(metrics["structural_metrics"])
+print(metrics["quality_metrics"])
+print(metrics["semantic_metrics"])
+print(metrics["grounding_metrics"])
 
-v1_explosion = metrics_v1['quality_metrics']['branch_explosion_ratio']
-v2_explosion = metrics_v2['quality_metrics']['branch_explosion_ratio']
-
-reduction = (1 - v2_explosion / v1_explosion) * 100
-print(f"v2.0 减少了 {reduction:.1f}% 的不必要探索")
+# 8. 版本对比（如果有上一版本）
+diff = graph_client.get_graph_diff(run.id, prev_run_id)
+print(diff)
 ```
 
 ---
 
-## 典型使用场景
+## 六、指标计算伪代码
 
-### 场景1：评估剪枝策略
+### 结构性指标（零成本）
 
-**问题**：GraphRAG 探索了太多不相关节点，效率低
-
-**评估方法**：
 ```python
-metrics = graph_client.get_graph_metrics(run_id)
+def compute_structural_metrics(run_id):
+    path = get_selected_path(run_id)
+    explored = get_explored_nodes(run_id)
+    edges = get_graph_edges(run_id)
 
-# 关注指标
-branch_explosion = metrics['quality_metrics']['branch_explosion_ratio']
+    # path_exists
+    path_exists = len(path) > 0
+    save_metric(run_id, "path_exists", float(path_exists))
 
-# 判断
-if branch_explosion > 10.0:
-    print("剪枝策略不够有效，建议优化")
+    if not path_exists:
+        return
+
+    # reasoning_hops
+    reasoning_hops = len(path) - 1
+    save_metric(run_id, "reasoning_hops", reasoning_hops)
+
+    # connectivity_score
+    graph = build_subgraph(explored, edges)
+    largest_cc = max(connected_components(graph), key=len)
+    connectivity_score = len(largest_cc) / len(explored) if explored else 0.0
+    save_metric(run_id, "connectivity_score", connectivity_score)
+```
+
+### 路径质量指标
+
+```python
+def compute_quality_metrics(run_id):
+    path = get_selected_path(run_id)
+    explored = get_explored_nodes(run_id)
+    query = get_query(run_id)
+
+    # branch_explosion_ratio
+    branch_explosion_ratio = len(explored) / len(path) if path else 0.0
+    save_metric(run_id, "branch_explosion_ratio", branch_explosion_ratio)
+
+    # irrelevant_branch_ratio（需要 embedding）
+    query_emb = embed(query)
+    node_embs = [embed(node.content) for node in explored]
+    similarities = [cosine_similarity(node_emb, query_emb) for node_emb in node_embs]
+    irrelevant_count = sum(1 for s in similarities if s < IRRELEVANCE_THRESHOLD)
+    irrelevant_branch_ratio = irrelevant_count / len(explored) if explored else 0.0
+    save_metric(run_id, "irrelevant_branch_ratio", irrelevant_branch_ratio)
+
+    # path_coverage（需要 gold_nodes）
+    gold = get_gold_nodes(run_id)
+    if gold:
+        selected_ids = set(n.id for n in path)
+        gold_ids = set(n.id for n in gold)
+        path_coverage = len(selected_ids & gold_ids) / len(gold_ids)
+        save_metric(run_id, "path_coverage", path_coverage)
+```
+
+### 语义指标（需要 LLM）
+
+```python
+def compute_semantic_metrics(run_id):
+    query = get_query(run_id)
+    answer = get_answer(run_id)
+    path = get_selected_path(run_id)
+
+    # path_relevance_score
+    path_relevance_score = llm_judge(query, path, answer, task="rate_path_relevance")
+    save_metric(run_id, "path_relevance_score", path_relevance_score)
+
+    # relation_chain_validity
+    relation_chain_validity = llm_relation_check(path, task="validate_relation_chain")
+    save_metric(run_id, "relation_chain_validity", relation_chain_validity)
+```
+
+### 答案支撑指标（需要 LLM）
+
+```python
+def compute_grounding_metrics(run_id):
+    answer = get_answer(run_id)
+    path = get_selected_path(run_id)
+
+    claims = extract_claims(answer)
+    supported = [c for c in claims if llm_judge(c, path, task="check_support")]
+
+    answer_grounded_score = len(supported) / len(claims) if claims else 0.0
+    unsupported_ratio = 1.0 - answer_grounded_score
+
+    save_metric(run_id, "answer_grounded_in_path_score", answer_grounded_score)
+    save_metric(run_id, "unsupported_claim_ratio", unsupported_ratio)
 ```
 
 ---
 
-### 场景2：对比两种搜索策略
+## 七、常见问题
 
-**问题**：BFS vs Beam Search，哪个更好？
+### Q1: 如何配置 LLM Judge？
 
-**评估方法**：
+语义指标和答案支撑指标需要 LLM Judge。在服务端启动时配置：
+
 ```python
-# 运行两个版本
-run_bfs = run_graphrag(strategy="BFS")
-run_beam = run_graphrag(strategy="Beam")
+from tracelens.core.llm_judge import set_llm_judge
 
-# 获取指标
-metrics_bfs = graph_client.get_graph_metrics(run_bfs)
-metrics_beam = graph_client.get_graph_metrics(run_beam)
+def my_llm_judge(prompt: str, task: str) -> float:
+    # 使用你的 LLM（OpenAI、Anthropic 等）
+    response = llm.chat(prompt)
+    return parse_score(response)
+
+set_llm_judge(my_llm_judge)
+```
+
+### Q2: semantic_metrics / grounding_metrics 返回 null？
+
+需要在请求时传入 `include_semantic=true` 或 `include_grounding=true`，且服务端已配置 LLM Judge。
+
+### Q3: 如何进行版本对比？
+
+```python
+# 版本 v1.0
+run_v1 = base_client.start_run(name="graph_query", metadata={"version_id": "v1.0"})
+
+# 版本 v2.0（更换了搜索策略）
+run_v2 = base_client.start_run(name="graph_query", metadata={"version_id": "v2.0"})
 
 # 对比
-print(f"BFS 分支爆炸比: {metrics_bfs['quality_metrics']['branch_explosion_ratio']}")
-print(f"Beam 分支爆炸比: {metrics_beam['quality_metrics']['branch_explosion_ratio']}")
+diff = graph_client.get_graph_diff(run_v2.id, run_v1.id)
 ```
 
----
+### Q4: path_exists=True 但 path_relevance_score 很低？
 
-### 场景3：验证推理路径质量
+说明 GraphRAG 找到了一条连通路径，但路径方向偏离了 query。常见原因：
+1. 起始节点选择错误（entity linking 阶段的问题）
+2. 关系权重设置不合理，导致搜索走向了不相关方向
+3. `max_hops` 设置过大，路径走偏后仍在继续扩展
 
-**问题**：推理路径看起来合理吗？
+### Q5: 如何解读版本对比指标？
 
-**评估方法**：
-```python
-# 获取推理路径
-path_data = graph_client.get_reasoning_path(run_id)
+**理想的版本升级**:
+- `path_length_delta` 接近 0（推理深度稳定）
+- `branch_explosion_delta` < 0（搜索效率提升）
+- `connectivity_delta` > 0（图结构更紧凑）
+- `new_nodes` 中节点与 query 相关性高
 
-# 查看选中路径
-for step in path_data['selected_path']:
-    print(f"{step['from_node']} --[{step['relation']}]-> {step['to_node']}")
-
-# 获取语义评分
-metrics = graph_client.get_graph_metrics(run_id, include_semantic=True)
-relevance = metrics['semantic_metrics']['path_relevance_score']
-
-if relevance < 0.5:
-    print("⚠️ 推理路径相关性较低，需要检查")
-```
+**需要警惕的版本升级**:
+- `path_length_delta` 大幅增加：推理冗余增多
+- `branch_explosion_delta` 大幅增加：搜索效率下降
+- `connectivity_delta` < 0：图结构变得更发散
 
 ---
 
-## 数据上报规范
+## 八、开发任务清单
 
-### 1. 图扩展事件（graph_expand）
+### Phase 1: 数据库与上报接口
+- [ ] 创建数据库表：graph_expand, graph_path, gold_path
+- [ ] 实现上报接口：graph/expand, graph/path_selected, gold/path
+- [ ] 复用 run, metric, answer_generated 表和接口
 
-**何时上报**：每次 GraphRAG 探索一条新边时
+### Phase 2: 结构性指标（零成本）
+- [ ] compute_path_exists
+- [ ] compute_reasoning_hops
+- [ ] compute_connectivity_score
 
-**数据结构**：
-```json
-{
-  "run_id": "uuid",
-  "from_node": "Alice",
-  "to_node": "Company_X",
-  "relation": "works_at",
-  "step_index": 1
-}
-```
+### Phase 3: 路径质量指标
+- [ ] compute_branch_explosion_ratio
+- [ ] compute_irrelevant_branch_ratio（需要 embedding）
+- [ ] compute_path_coverage（需要 gold_nodes）
 
----
+### Phase 4: 语义与答案支撑指标（需要 LLM）
+- [ ] compute_path_relevance_score
+- [ ] compute_relation_chain_validity
+- [ ] compute_answer_grounded_in_path_score
+- [ ] compute_unsupported_claim_ratio
 
-### 2. 路径选择事件（path_selected）
+### Phase 5: 查询接口
+- [ ] GET /api/v1/run/{run_id}/graph_metrics
+- [ ] GET /api/v1/run/{run_id}/graph_diff
 
-**何时上报**：GraphRAG 确定最终推理路径时
-
-**数据结构**：
-```json
-{
-  "run_id": "uuid",
-  "path": ["Alice", "Company_X", "Project_AI"]
-}
-```
-
-**注意**：
-- `path` 是节点 ID 的有序列表
-- 系统会自动匹配 `graph_expand` 事件，标记选中的边
-
----
-
-## MVP 范围说明
-
-### ✅ MVP 包含
-
-1. 结构性指标（path_exists, reasoning_hops, connectivity_score）
-2. 路径质量指标（branch_explosion_ratio, path_coverage）
-3. 语义合理性指标（path_relevance_score）
-4. 推理路径可视化
-5. 版本对比能力
-
-### ❌ MVP 不包含
-
-1. 自动最优路径搜索
-2. 全图最短路径证明
-3. 多路径 ensemble 评测
-4. 自动 gold path 构建
-5. 实时路径推荐
-
----
-
-## 常见问题
-
-### Q1: GraphRAG 指标和 RAG 指标有什么区别？
-
-**A**: 
-- **RAG 指标**：评估文本检索质量（topK 相似度、chunk 覆盖度）
-- **GraphRAG 指标**：评估推理路径质量（推理跳数、分支爆炸比、路径连通性）
-
-核心差异：**RAG 评测"找得像不像"，GraphRAG 评测"推理走得对不对"**
-
----
-
-### Q2: 如何选择合适的指标？
-
-**建议**：
-1. **日常开发**：只看结构性指标（免费，快速）
-2. **版本对比**：关注 branch_explosion_ratio（效率提升）
-3. **Benchmark**：使用 path_coverage + path_relevance_score（精度）
-
----
-
-### Q3: branch_explosion_ratio 多少算合理？
-
-**参考值**：
-- `< 5.0`: 优秀
-- `5.0 - 10.0`: 良好
-- `10.0 - 20.0`: 一般，建议优化
-- `> 20.0`: 需要优化剪枝策略
-
----
-
-### Q4: 如何降低 branch_explosion_ratio？
-
-**优化方向**：
-1. 引入更强的相关性过滤
-2. 减小 beam_size
-3. 降低 max_hops
-4. 使用语义剪枝（LLM Judge 提前剪枝）
-
----
-
-## 批量评测
-
-TraceLens 提供了 **GraphRAG 批量评测**功能，支持系统化地评估 GraphRAG 系统的推理效率和路径质量。
-
-### 核心能力
-
-1. **测试集管理**：创建和管理多跳推理测试问题集
-2. **版本对比**：量化不同剪枝策略、搜索算法的优化效果
-3. **聚合指标**：自动计算 avg / p50 / p95 等统计量
-4. **Per-Query 分析**：识别哪些问题改进显著、哪些仍需优化
-
-### 关键概念
-
-- **TestSuite**：一组多跳推理测试问题的集合
-- **TestCase**：单个测试问题，包含 `query`, `gold_path`, `gold_nodes` 等
-- **Evaluation**：针对特定版本 GraphRAG 系统的评测任务
-- **聚合指标**：对所有 runs 的指标进行统计（avg, p50, p95）
-
-### Gold 数据设计
-
-| 字段 | 类型 | 必需 | 说明 |
-|------|------|------|------|
-| `gold_path` | list[str] | ❌ | 标准推理路径的节点序列，如 `["Alice", "Company_X", "Project_AI"]` |
-| `gold_nodes` | list[str] | ❌ | 应该检索到的关键节点集合 |
-
-- `gold_path` 用于计算 `path_coverage`（路径覆盖度）
-- `gold_nodes` 用于计算节点召回率
-- 全部可选，支持无 gold 数据的场景
-
-### 使用场景
-
-#### 场景 1：评估剪枝策略优化
-
-```python
-# 创建测试集
-test_suite = eval_client.create_test_suite(
-    name="GraphRAG Reasoning Test Suite",
-    description="50个多跳推理测试问题"
-)
-
-# 上传测试用例（包含 gold_path）
-test_cases = [
-    {
-        "query": "Alice 和 Project_AI 的关系",
-        "gold_path": ["Alice", "Company_X", "Project_AI"],
-        "gold_nodes": ["Alice", "Company_X", "Project_AI"]
-    },
-    # ... 更多测试用例
-]
-eval_client.upload_test_cases(suite_id, test_cases)
-
-# 运行 v1.0 评测（BFS）
-evaluation_v1 = eval_client.create_evaluation(
-    name="v1.0 BFS",
-    test_suite_id=suite_id,
-    version_id="v1.0_BFS",
-    metadata={"search_strategy": "BFS", "max_hops": 5}
-)
-# ... 运行评测 ...
-
-# 运行 v2.0 评测（Beam Search）
-evaluation_v2 = eval_client.create_evaluation(
-    name="v2.0 Beam Search",
-    test_suite_id=suite_id,
-    version_id="v2.0_BeamSearch",
-    metadata={"search_strategy": "BeamSearch", "beam_size": 3}
-)
-# ... 运行评测 ...
-
-# 版本对比
-comparison = eval_client.compare_graph_evaluations(
-    eval_a_id=evaluation_v1["id"],
-    eval_b_id=evaluation_v2["id"]
-)
-
-# 分析结果
-branch_delta = comparison["metrics_delta"]["quality"]["branch_explosion_ratio"]
-print(f"分支爆炸比: {branch_delta['avg_a']:.2f} → {branch_delta['avg_b']:.2f}")
-print(f"改善: {branch_delta['percent_change']:.1f}%")
-```
-
-#### 场景 2：参数调优（max_hops, beam_size）
-
-```python
-# 创建多个评测任务，分别使用不同参数
-eval_hops3 = eval_client.create_evaluation(
-    name="max_hops=3",
-    test_suite_id=suite_id,
-    version_id="v1_hops3",
-    metadata={"max_hops": 3}
-)
-
-eval_hops5 = eval_client.create_evaluation(
-    name="max_hops=5",
-    test_suite_id=suite_id,
-    version_id="v1_hops5",
-    metadata={"max_hops": 5}
-)
-
-# 对比
-comparison = eval_client.compare_graph_evaluations(
-    eval_a_id=eval_hops3["id"],
-    eval_b_id=eval_hops5["id"]
-)
-```
-
-### API 端点
-
-- `GET /api/v1/evaluation/{evaluation_id}/graph_metrics` - 获取 GraphRAG 聚合指标
-- `GET /api/v1/evaluation/graph_compare?eval_a={uuid}&eval_b={uuid}` - 对比两个评测
-
-### 详细文档
-
-完整的 GraphRAG 批量评测指南，请参考：
-- **[GRAPH_EVALUATION_GUIDE.md](GRAPH_EVALUATION_GUIDE.md)** - 完整的批量评测指南
-- **[examples/graph_evaluation_example.py](../examples/graph_evaluation_example.py)** - 完整示例代码
-- **[examples/graph_evaluation_comparison_example.py](../examples/graph_evaluation_comparison_example.py)** - 版本对比示例
+### Phase 6: SDK 与示例
+- [ ] Python SDK（GraphClient）
+- [ ] API 接入示例
+- [ ] 版本对比示例
 
 ---
 
 ## 总结
 
-TraceLens GraphRAG 评测体系的核心价值：
+TraceLens GraphRAG 是一个**专注于推理路径可观测性的 GraphRAG 评测平台**。核心价值：
 
-> **让 GraphRAG 的推理过程从"黑盒"变成"可观测、可对比、可优化"的系统。**
+✅ **结构健康检查**：path_exists, reasoning_hops, connectivity_score  
+✅ **搜索效率评估**：branch_explosion_ratio, irrelevant_branch_ratio  
+✅ **路径质量验证**：path_relevance_score, relation_chain_validity  
+✅ **幻觉检测**：answer_grounded_in_path_score, unsupported_claim_ratio  
+✅ **版本对比分析**：graph_diff 接口，追踪推理路径变化  
+✅ **可选 gold data**：不强制要求标准答案  
 
-三层指标体系：
-- ✅ **结构性指标**：零成本，快速判断
-- ⚡ **质量指标**：评估效率和正确性
-- 🎯 **语义指标**：高精度验证
-
-**适用场景**：
-- 剪枝策略优化
-- 搜索算法对比
-- 版本回归测试
-- Benchmark 评测
-- **批量评测与版本对比**（新增）
-```
-
+> 让 GraphRAG 推理从 **黑盒推理 → 可观测推理 → 可优化推理**

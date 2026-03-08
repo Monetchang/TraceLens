@@ -88,24 +88,29 @@ def path_selected(req: PathSelectedRequest, db: Session = Depends(get_db), _: No
 def get_graph_metrics(
     run_id: UUID,
     include_semantic: bool = False,
+    include_grounding: bool = True,
     db: Session = Depends(get_db)
 ):
     """获取 GraphRAG 指标"""
     from tracelens.core.graph_metrics import compute_all_graph_metrics
-    
+
     run_repo = RunRepository(db)
     run = run_repo.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    
-    # 计算指标
-    metrics = compute_all_graph_metrics(run_id, db, include_semantic=include_semantic)
-    
+
+    metrics = compute_all_graph_metrics(
+        run_id, db,
+        include_semantic=include_semantic,
+        include_grounding=include_grounding
+    )
+
     return GraphMetricsResponse(
         run_id=run_id,
         structural_metrics=metrics.get("structural", {}),
         quality_metrics=metrics.get("quality"),
-        semantic_metrics=metrics.get("semantic") if include_semantic else None
+        semantic_metrics=metrics.get("semantic") if include_semantic else None,
+        grounding_metrics=metrics.get("grounding") if include_grounding else None
     )
 
 
