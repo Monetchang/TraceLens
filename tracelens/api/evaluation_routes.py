@@ -113,7 +113,7 @@ def get_test_cases(
             gold_answer=tc.gold_answer,
             gold_chunk_ids=tc.gold_chunk_ids,
             gold_doc_ids=tc.gold_doc_ids,
-            metadata=tc.metadata_,
+            metadata=tc.metadata_ or {},
             created_at=tc.created_at
         )
         for tc in test_cases
@@ -147,6 +147,77 @@ def create_evaluation(req: EvaluationCreateRequest, db: Session = Depends(get_db
         created_at=evaluation.created_at,
         completed_at=evaluation.completed_at
     )
+
+
+@router.get("/evaluation/compare", response_model=EvaluationComparisonResponse)
+def compare_evaluations(
+    eval_a: UUID = Query(..., description="第一个评测任务 ID"),
+    eval_b: UUID = Query(..., description="第二个评测任务 ID"),
+    similarity_mode: str = Query("lexical", description="相似度计算模式：lexical, embedding, llm"),
+    include_per_query: bool = Query(False, description="是否包含每个问题的详细对比"),
+    db: Session = Depends(get_db)
+):
+    """对比两个评测任务"""
+    try:
+        comparison_data = compute_evaluation_comparison(
+            eval_a, eval_b, db, similarity_mode, include_per_query
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compare evaluations: {str(e)}")
+    
+    metrics_delta = {}
+    for metric_name, delta_stats in comparison_data["metrics_delta"].items():
+        metrics_delta[metric_name] = delta_stats
+    
+    per_query_comparison = None
+    if include_per_query and comparison_data["per_query_comparison"]:
+        per_query_comparison = []
+        for item in comparison_data["per_query_comparison"]:
+            metrics_delta_dict = {}
+            for metric_name, delta in item["metrics_delta"].items():
+                metrics_delta_dict[metric_name] = MetricDelta(**delta)
+            per_query_comparison.append(PerQueryComparison(
+                test_case_id=item["test_case_id"],
+                query=item["query"],
+                run_id_a=item["run_id_a"],
+                run_id_b=item["run_id_b"],
+                metrics_delta=metrics_delta_dict
+            ))
+    
+    return EvaluationComparisonResponse(
+        evaluation_a=comparison_data["evaluation_a"],
+        evaluation_b=comparison_data["evaluation_b"],
+        metrics_delta=metrics_delta,
+        per_query_comparison=per_query_comparison
+    )
+
+
+@router.get("/evaluation/graph_compare", response_model=GraphEvaluationComparisonResponse)
+def compare_graph_evaluations(
+    eval_a: UUID = Query(..., description="第一个评测任务 ID"),
+    eval_b: UUID = Query(..., description="第二个评测任务 ID"),
+    include_semantic: bool = Query(False, description="是否包含语义指标"),
+    include_grounding: bool = Query(True, description="是否包含答案支撑指标"),
+    include_per_query: bool = Query(False, description="是否包含每个问题的详细对比"),
+    db: Session = Depends(get_db)
+):
+    """对比两个 GraphRAG 评测任务"""
+    try:
+        comparison_data = compute_graph_evaluation_comparison(
+            eval_a, eval_b, db,
+            include_semantic=include_semantic,
+            include_grounding=include_grounding,
+            include_per_query=include_per_query,
+            llm_client=None
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compare graph evaluations: {str(e)}")
+    
+    return GraphEvaluationComparisonResponse(**comparison_data)
 
 
 @router.get("/evaluation/{evaluation_id}", response_model=EvaluationResponse)
@@ -197,7 +268,7 @@ def get_evaluation_test_cases(evaluation_id: UUID, db: Session = Depends(get_db)
             gold_answer=tc.gold_answer,
             gold_chunk_ids=tc.gold_chunk_ids,
             gold_doc_ids=tc.gold_doc_ids,
-            metadata=tc.metadata_,
+            metadata=tc.metadata_ or {},
             created_at=tc.created_at
         )
         for tc in test_cases
@@ -322,56 +393,6 @@ def get_evaluation_metrics(
     )
 
 
-# ==================== 版本对比 ====================
-
-@router.get("/evaluation/compare", response_model=EvaluationComparisonResponse)
-def compare_evaluations(
-    eval_a: UUID = Query(..., description="第一个评测任务 ID"),
-    eval_b: UUID = Query(..., description="第二个评测任务 ID"),
-    similarity_mode: str = Query("lexical", description="相似度计算模式：lexical, embedding, llm"),
-    include_per_query: bool = Query(False, description="是否包含每个问题的详细对比"),
-    db: Session = Depends(get_db)
-):
-    """对比两个评测任务"""
-    try:
-        comparison_data = compute_evaluation_comparison(
-            eval_a, eval_b, db, similarity_mode, include_per_query
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to compare evaluations: {str(e)}")
-    
-    # 转换为响应格式
-    metrics_delta = {}
-    for metric_name, delta_stats in comparison_data["metrics_delta"].items():
-        # 保持原始字典格式，因为包含多个字段
-        metrics_delta[metric_name] = delta_stats
-    
-    per_query_comparison = None
-    if include_per_query and comparison_data["per_query_comparison"]:
-        per_query_comparison = []
-        for item in comparison_data["per_query_comparison"]:
-            metrics_delta_dict = {}
-            for metric_name, delta in item["metrics_delta"].items():
-                metrics_delta_dict[metric_name] = MetricDelta(**delta)
-            
-            per_query_comparison.append(PerQueryComparison(
-                test_case_id=item["test_case_id"],
-                query=item["query"],
-                run_id_a=item["run_id_a"],
-                run_id_b=item["run_id_b"],
-                metrics_delta=metrics_delta_dict
-            ))
-    
-    return EvaluationComparisonResponse(
-        evaluation_a=comparison_data["evaluation_a"],
-        evaluation_b=comparison_data["evaluation_b"],
-        metrics_delta=metrics_delta,
-        per_query_comparison=per_query_comparison
-    )
-
-
 # ==================== GraphRAG 评测 ====================
 
 @router.get("/evaluation/{evaluation_id}/graph_metrics", response_model=GraphEvaluationMetricsResponse)
@@ -401,30 +422,4 @@ def get_graph_evaluation_metrics(
         raise HTTPException(status_code=500, detail=f"Failed to compute graph metrics: {str(e)}")
     
     return GraphEvaluationMetricsResponse(**metrics_data)
-
-
-@router.get("/evaluation/graph_compare", response_model=GraphEvaluationComparisonResponse)
-def compare_graph_evaluations(
-    eval_a: UUID = Query(..., description="第一个评测任务 ID"),
-    eval_b: UUID = Query(..., description="第二个评测任务 ID"),
-    include_semantic: bool = Query(False, description="是否包含语义指标"),
-    include_grounding: bool = Query(True, description="是否包含答案支撑指标"),
-    include_per_query: bool = Query(False, description="是否包含每个问题的详细对比"),
-    db: Session = Depends(get_db)
-):
-    """对比两个 GraphRAG 评测任务"""
-    try:
-        comparison_data = compute_graph_evaluation_comparison(
-            eval_a, eval_b, db,
-            include_semantic=include_semantic,
-            include_grounding=include_grounding,
-            include_per_query=include_per_query,
-            llm_client=None
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to compare graph evaluations: {str(e)}")
-    
-    return GraphEvaluationComparisonResponse(**comparison_data)
 

@@ -111,12 +111,13 @@ class MetricRepository:
             value_json=value_json, metadata_=metadata or {},
             similarity_mode=similarity_mode
         )
+        tbl = Metric.__table__
         stmt = stmt.on_conflict_do_update(
             constraint="uq_metrics_run_name_mode",
             set_={
-                Metric.value: stmt.excluded.value,
-                Metric.value_json: stmt.excluded.value_json,
-                Metric.metadata_: stmt.excluded.metadata_,
+                tbl.c.value: stmt.excluded.value,
+                tbl.c.value_json: stmt.excluded.value_json,
+                tbl.c.metadata: stmt.excluded.metadata,
             },
         )
         self.db.execute(stmt)
