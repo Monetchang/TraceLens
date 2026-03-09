@@ -24,5 +24,6 @@
 ## 运行测试
 
 ```bash
+# 从项目根目录执行，无需启动服务（TestClient 进程内测试）
 python3 tests/test_api.py
 ```
